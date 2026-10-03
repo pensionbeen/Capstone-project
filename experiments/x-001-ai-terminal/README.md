@@ -4,11 +4,11 @@
 
 ## 패키지 설치 없이 실행
 
-Node 24.15.0에서 로컬 검사 **36개**와 Codex의 **Sol/High·Astra/Max 실제 응답 및 CLI 설정**을 확인했다. 현재 세션은 승인된 외부 실행으로 설치 CLI에 접근할 수 있다. Gemini의 읽기 전용 제한과 PTY 호스트 종료는 미해결이다. 다음 로컬 검사는 node-pty 설치 없이 실행할 수 있다.
+Node 24.15.0에서 로컬 검사 **52개**와 Codex의 **Sol/High·Astra/Max 실제 응답 및 CLI 설정**을 확인했다. 완료한 Codex 명령형 대화의 한글·JSON·재개도 실측했다. 관리 호스트 + 포함된 실험용 ConPTY DLL은 최종 보완 뒤에도 13회 실제 fixture 검증을 통과했다(2026-10-04 00:32:26 KST). Gemini는 한글 접속 응답을 관측했지만 읽기 전용 독립 검토는 계속 미확인이다. 다음 로컬 검사는 node-pty 설치 없이 실행할 수 있다.
 
 ~~~powershell
 Set-Location -LiteralPath 'C:\Users\jbiho\dev\Capstone-project\experiments\x-001-ai-terminal'
-node --test lib.test.mjs review.test.mjs smoke.test.mjs
+node --test lib.test.mjs review.test.mjs smoke.test.mjs managed.test.mjs
 node ai-capabilities.mjs
 node ai-review.mjs --probe --provider codex
 node agy-capabilities.mjs
@@ -66,6 +66,23 @@ preflight는 준비 검사다. smoke는 정상·강제 종료·재시작을 **�
 실제 Windows에서는 정상 모드의 한글·resize·Ctrl+C 바이트·가짜 부모/자식 종료가 통과해도 호스트가 남아 **전체 FAIL**이다. 단순 내부 PASS나 stdout 문자열만으로 합격하지 않는다. node-pty 내부 작업 정리 누락은 원인 후보로 조사 중이다. `node pty-smoke.mjs --conpty-dll`은 명시적 가짜 데이터 비교용이며, 이 실험용 DLL도 호스트 종료에 실패했다. 기본 모드를 자동 변경하지 않는다. 실패 후 다시 실행하려면 해당 실행의 잔존 프로세스부터 확인한다.
 
 terminal은 현재 실제 CLI/PTY를 시작하기 전에 **TUI_CONFIG_ISOLATION_UNCONFIRMED**로 차단한다. 설치된 top-level TUI가 exec의 ignore-user-config 옵션을 제공하지 않기 때문이다. exec 응답 성공을 대화형 TUI·재개 성공으로 확대하지 않는다. 실제 Codex·Electron 통합은 미검증이다. response.schema.json도 CLI 적용 전 샘플이다.
+
+## 관리되는 PTY 비교 — WL-20261004-01
+
+~~~powershell
+node pty-managed.mjs
+node pty-managed.mjs --conpty-dll
+~~~
+
+각 명령은 별도 비교다. 앞선 명령이 실패했다면 해당 실행의 정리를 먼저 확인하고 다음 명령을 실행한다. 실패 뒤 자동으로 DLL로 전환하지 않는다. 기본 ConPTY는 정상 정리 성공·강제 종료 stderr로 실패했다. 명시적인 **실험용 포함 DLL**은 정상·강제·대량 출력·10회 재시작 **13회/79개 확인**을 모두 통과했다(2026-10-04 00:15:35 KST).
+
+`managed-supervisor`는 직접 생성한 호스트만 종료 요청하고 실제 close·최종 stderr·관측 후손 소멸을 확인한다. fixture가 보낸 PASS만으로 다음 실행을 시작하지 않는다. 호스트 신원은 Windows CIM의 PID+생성 시각으로 확인하고, fixture/자식/콘솔이 살아 있을 때 부모 관계를 확보한다. 조회용 콘솔은 실제 query 자식 객체의 identity로만 제외하며 편집기 등 외부 콘솔도 검증한 별도 부모 계통으로 구분한다. 조회 실패/관측 누락/알 수 없는 콘솔은 실패다.
+
+정상적인 관리 호스트도 소유자가 명시적으로 종료한다. `nativeNaturalExit:false`, `hostDisposedByOwner:true`가 정상적인 결과이며 **node-pty 자연 종료 결함을 고쳤다는 뜻이 아니다**. 기존 smoke는 그 결함을 드러내도록 보존했다. 결과는 `.runtime/latest-pty-managed.json` 및 시각별 파일에 저장하며 Git에서 제외한다. 창 내부 AI, Electron, 미관측 순간 후손, 장시간 자원 증가/소켓·포트 전부를 검증한 결과로 확대하지 않는다.
+
+Codex `exec` 재개는 `--ignore-user-config --ignore-rules --sandbox read-only`, 승인 never, Sol/High와 hooks/plugins 비활성 설정으로 시험했다. `exec resume`에는 첫 실행의 정확한 ID를 전달했으며 `--last`는 사용하지 않았다. 이 시험은 저장 대화가 필요하므로 `--ephemeral`을 사용하지 않았다. CLI 자체 이력에는 테스트 문장만 남고 인증 파일은 복사/수정하지 않았다. PowerShell 파이프에 한글을 보내려면 `$OutputEncoding`과 `[Console]::OutputEncoding` 모두 UTF-8로 지정한다. `terminal`의 TUI 차단은 유지한다.
+
+Antigravity 1.2.16의 `excludeDefaultComponents: true`와 명시적 작업 폴더/새 프로젝트 비교에서도 도구 제한은 입증하지 못했다. 코드 없는 한글 한 줄의 실제 접속 응답은 확인했지만 stderr 78바이트로 엄격한 전체 판정은 실패했다. 파일/설정 불변·관측 도구 활동 없음은 사후 관측이며 읽기 전용 강제의 증거가 아니다. 자동 독립 검토는 계속 보류한다. [최신 실험 기록](../../docs/work-log/2026-10-04.md)을 따른다.
 
 ## 현재 작업 브랜치 원격 반영
 
