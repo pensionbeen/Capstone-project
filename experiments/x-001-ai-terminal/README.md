@@ -56,3 +56,32 @@ npm.cmd run terminal
 ~~~
 
 설치/PTY 성공은 미확인이다. preflight는 준비 검사, smoke는 가짜 Node 자식 ConPTY 검사, terminal은 실제 Codex 대화 관찰이다. 가짜 자식 성공으로 Codex/Electron 호환성을 판정하지 않는다. /quit 정상 종료, Ctrl+Q 실험 중단, Ctrl+C 입력 중단. 10분 한도·한글·resize·중단·후손 정리·재개를 실제 확인해야 X-001을 판정한다. response.schema.json은 후속 응답 형식 샘플이며 CLI 적용 검증 전이다.
+
+## 현재 작업 브랜치 원격 반영
+
+현재 세션은 원격 조회·일반 push 모두 GitHub 443 연결 실패다. 일반 사용자 PowerShell에서 아래처럼 **이 작업 브랜치만** 보낸다. main 병합/강제 push는 없다. 조회 성공과 push 성공·해시 일치를 구분한다.
+
+~~~powershell
+Set-Location -LiteralPath 'C:\Users\jbiho\dev\Capstone-project'
+if ((git remote get-url origin) -ne 'https://github.com/pensionbeen/Capstone-project.git') {
+    throw '대상 원격 주소가 다릅니다.'
+}
+if ((git branch --show-current) -ne 'spike/x-001-ai-terminal') {
+    throw '현재 작업 브랜치가 다릅니다.'
+}
+git status --short --branch
+$x001Changes = git status --porcelain
+if ($LASTEXITCODE -ne 0 -or $x001Changes) {
+    throw '상태 조회 실패 또는 미커밋 변경: 먼저 내용을 확인하세요.'
+}
+git ls-remote --heads origin refs/heads/spike/x-001-ai-terminal
+if ($LASTEXITCODE -ne 0) { throw '원격 조회 실패' }
+git push -u origin spike/x-001-ai-terminal:refs/heads/spike/x-001-ai-terminal
+if ($LASTEXITCODE -ne 0) { throw '일반 push 실패. 강제 push하지 마세요.' }
+$x001Local = git rev-parse spike/x-001-ai-terminal
+if ($LASTEXITCODE -ne 0) { throw '로컬 해시 조회 실패' }
+$x001Remote = git ls-remote --heads origin refs/heads/spike/x-001-ai-terminal
+if ($LASTEXITCODE -ne 0 -or -not $x001Remote) { throw 'push 후 원격 확인 실패' }
+if (($x001Remote -split '\s+')[0] -ne $x001Local) { throw '원격/로컬 해시 불일치' }
+Write-Output "X-001 push 및 원격 해시 일치: $x001Local"
+~~~
