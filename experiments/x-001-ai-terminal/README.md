@@ -4,7 +4,7 @@
 
 ## 패키지 설치 없이 실행
 
-Node 24.15.0에서 로컬 검사 **52개**와 Codex의 **Sol/High·Astra/Max 실제 응답 및 CLI 설정**을 확인했다. 완료한 Codex 명령형 대화의 한글·JSON·재개도 실측했다. 관리 호스트 + 포함된 실험용 ConPTY DLL은 최종 보완 뒤에도 13회 실제 fixture 검증을 통과했다(2026-10-04 00:32:26 KST). Gemini는 한글 접속 응답을 관측했지만 읽기 전용 독립 검토는 계속 미확인이다. 다음 로컬 검사는 node-pty 설치 없이 실행할 수 있다.
+아래 기본 검사는 패키지 설치 없이 실행할 수 있다. 최신 전체 검사는 `npm.cmd ci` 뒤 `npm.cmd test`로 실행한다. 새 터미널 화면 판독은 고정한 `@xterm/headless` 6.0.0이 필요하다. 실제 Codex 중단·재개, Electron 실행 환경, Gemini Project deny 및 독립 검토 결과는 아래 WL-20261004-02와 [실험 보고](../../docs/experiments/X-001.md)에 모았다.
 
 ~~~powershell
 Set-Location -LiteralPath 'C:\Users\jbiho\dev\Capstone-project\experiments\x-001-ai-terminal'
@@ -36,7 +36,7 @@ node ai-review.mjs --packet .runtime/review-packet.json --provider codex
 
 Gemini 후보는 gemini-3.1-pro-preview이며 계정 이용 가능성은 미확인이다. init.model은 설정값이고 최종 result.stats.models를 실행 관찰에 쓴다. 통계 부재·다른 모델은 사용 보류다. 새로운 Pro 후보 채택에는 이유와 실제 호출 근거를 남긴다.
 
-사용자가 제공했던 Google 로그인 배너는 Antigravity 1.1.10 / Google AI Pro / Gemini 3.1 Pro (High)였고, 이번 실제 설치 조회는 **1.2.16**, Pro 목록은 **gemini-3.1-pro-high**다. Gemini CLI의 설정·옵션과 혼용하지 않는다. 맞춤 에이전트에 도구 없음 또는 view_file만 지정한 질문 전 init 조사에서도 쓰기·명령 실행 도구가 표시돼 실제 검토를 보내지 않았다. 기본 headless는 폴더 쓰기를 허용하므로 자동 검토 연결은 보류한다. 기존 로그인·전역 설정은 보존하며 사용자의 Pro 적극 활용 지시는 제한 적용을 해결한 뒤 실행한다.
+사용자가 제공했던 Google 로그인 배너는 Antigravity 1.1.10 / Google AI Pro / Gemini 3.1 Pro (High)였고, 실제 설치 조회는 **1.2.16**, Pro 목록은 **gemini-3.1-pro-high**다. Gemini CLI의 설정·옵션과 혼용하지 않는다. 이전 맞춤 에이전트 조사는 제한을 입증하지 못했다. 후속 WL-20261004-02에서 전용 임시 프로젝트의 Project deny로 네 가지 실제 도구 시도가 거부되는 것을 확인하고 별도 실행기를 만들었다. `init.tools` 60개는 도구 목록이며 허용된 권한 60개라는 뜻이 아니다.
 
 첫 어댑터는 24KB 이하 전달문만 받으며 @ 파일 참조 구문은 거부한다. 이 문자가 필요한 코드는 임의 변형하지 말고 어댑터 개선/다른 읽기 전용 검토로 남긴다. 비밀 패턴 검사는 완전하지 않으므로 주담당의 전송 전 검토도 필요하다.
 
@@ -65,7 +65,7 @@ preflight는 준비 검사다. smoke는 정상·강제 종료·재시작을 **�
 
 실제 Windows에서는 정상 모드의 한글·resize·Ctrl+C 바이트·가짜 부모/자식 종료가 통과해도 호스트가 남아 **전체 FAIL**이다. 단순 내부 PASS나 stdout 문자열만으로 합격하지 않는다. node-pty 내부 작업 정리 누락은 원인 후보로 조사 중이다. `node pty-smoke.mjs --conpty-dll`은 명시적 가짜 데이터 비교용이며, 이 실험용 DLL도 호스트 종료에 실패했다. 기본 모드를 자동 변경하지 않는다. 실패 후 다시 실행하려면 해당 실행의 잔존 프로세스부터 확인한다.
 
-terminal은 현재 실제 CLI/PTY를 시작하기 전에 **TUI_CONFIG_ISOLATION_UNCONFIRMED**로 차단한다. 설치된 top-level TUI가 exec의 ignore-user-config 옵션을 제공하지 않기 때문이다. exec 응답 성공을 대화형 TUI·재개 성공으로 확대하지 않는다. 실제 Codex·Electron 통합은 미검증이다. response.schema.json도 CLI 적용 전 샘플이다.
+terminal은 실제 CLI/PTY를 시작하기 전에 **TUI_CONFIG_ISOLATION_UNCONFIRMED**로 차단한다. 설치된 top-level TUI가 exec의 ignore-user-config 옵션을 제공하지 않기 때문이다. 아래 명령형 Codex PTY 성공을 대화형 TUI 성공으로 확대하지 않는다. Electron 창과 실제 AI의 통합도 미검증이다. response.schema.json은 CLI 적용 전 샘플이다.
 
 ## 관리되는 PTY 비교 — WL-20261004-01
 
@@ -82,7 +82,54 @@ node pty-managed.mjs --conpty-dll
 
 Codex `exec` 재개는 `--ignore-user-config --ignore-rules --sandbox read-only`, 승인 never, Sol/High와 hooks/plugins 비활성 설정으로 시험했다. `exec resume`에는 첫 실행의 정확한 ID를 전달했으며 `--last`는 사용하지 않았다. 이 시험은 저장 대화가 필요하므로 `--ephemeral`을 사용하지 않았다. CLI 자체 이력에는 테스트 문장만 남고 인증 파일은 복사/수정하지 않았다. PowerShell 파이프에 한글을 보내려면 `$OutputEncoding`과 `[Console]::OutputEncoding` 모두 UTF-8로 지정한다. `terminal`의 TUI 차단은 유지한다.
 
-Antigravity 1.2.16의 `excludeDefaultComponents: true`와 명시적 작업 폴더/새 프로젝트 비교에서도 도구 제한은 입증하지 못했다. 코드 없는 한글 한 줄의 실제 접속 응답은 확인했지만 stderr 78바이트로 엄격한 전체 판정은 실패했다. 파일/설정 불변·관측 도구 활동 없음은 사후 관측이며 읽기 전용 강제의 증거가 아니다. 자동 독립 검토는 계속 보류한다. [최신 실험 기록](../../docs/work-log/2026-10-04.md)을 따른다.
+WL-01 당시 Antigravity 비교는 제한을 입증하지 못했고 한글 응답도 stderr 78바이트로 전체 FAIL이었다. 이 과거 결과는 보존한다. 아래 후속 검증으로 권한 제한과 검토 응답을 새로 확인했다.
+
+## 실제 Codex 중단·재개 — WL-20261004-02
+
+~~~powershell
+npm.cmd ci
+npm.cmd test
+node codex-exec-pty.mjs --conpty-dll
+~~~
+
+`.cmd` 경로는 정상 한글 응답을 받았지만 Ctrl+C 뒤 명시적 `turn interrupted`가 없어 FAIL이었다. 실패 기록의 host close·관측 후손 소멸·남은 프로세스를 확인한 뒤에만 다음 명시적 비교를 실행한다. 실패 잠금을 자동 삭제하지 않는다.
+
+~~~powershell
+node codex-exec-pty.mjs --conpty-dll --native
+~~~
+
+`--native`는 기존 Codex 0.160.0 npm 패키지가 실행하는 **같은 codex.exe**를 직접 PTY에 연결하는 비교다. 버전·로그인·모델 목록 조사는 `codex.cmd`로 유지하며 재설치나 인증 변경을 하지 않는다. 기본 경로를 몰래 바꾸지 않는다. 02:00:35 및 오류행 삭제 판정 보완 후 **02:08:05 KST**, 정상 응답 → 생성 완료 전 Ctrl+C → 같은 UUID 재개가 모두 통과했다. Sol/High·read-only·never 설정, 정확한 한글 표식, 실제 종료·관측 후손 소멸·stderr 0을 확인했다.
+
+프롬프트는 고정 인자이고 키보드 입력 검증은 아니다. resize는 PTY 요청 성공만 확인하며 TUI 화면 재배치·원격 서버 계산 중지·Electron 안 AI 실행은 미검증이다. 터미널 커서 이동은 xterm으로 복원하고, 화면에서 지워진 오류/모델 변경/도구 표식도 1MB 한도의 원본 스트림에서 검사한다. 원본 스트림은 메모리에서만 사용한다. 결과는 `.runtime/latest-codex-exec-pty.json`에 저장한다.
+
+## Electron 실행 환경 호환 — WL-20261004-02
+
+별도 임시 폴더에 정확한 Electron 44.5.1을 설치한 뒤 그 절대 실행 경로를 전달한다. 앱 의존성으로 채택한 것은 아니다. 해당 패키지는 바이너리가 없으면 공식 `node_modules/electron/install.js`로 설치하는 구조였으며 버전 표시를 다시 대조했다.
+
+~~~powershell
+node electron-node-probe.mjs 'C:\임시설치폴더\node_modules\electron\dist\electron.exe' --conpty-dll
+~~~
+
+**01:37:11 KST**, Electron 44.5.1/내부 Node 24.21.0/modules 149/napi 10의 `ELECTRON_RUN_AS_NODE` 호스트에서 node-pty 1.1.0을 읽고 시스템 Node fixture를 실행했다. 한글·크기·중단 바이트·종료·마지막 출력 등 6개 확인과 정리가 통과했다. Electron 자체를 PTY 손님으로 쓴 초기 두 비교는 관측 timeout으로 실패했다. BrowserWindow·renderer·패키징은 아직 시험하지 않았다.
+
+## 실제 제한을 확인한 Gemini 검토 — WL-20261004-02
+
+기존 Google 로그인으로 **전용 임시 프로젝트만** 사용한다. 프로젝트 준비·권한 시험은 별도 실험 단계이며 전역 설정을 수정하지 않는다.
+
+1. 시스템 임시 폴더 아래 `capstone-x001-policy-*` 전용 폴더와 합성 읽기/수정 파일을 준비한다. `agy --new-project`의 `/permissions` 화면에서 **Project → denylist**를 선택한다.
+2. `read_file(*)`, `write_file(*)`, `command(*)`, `unsandboxed(*)`, `read_url(*)`, `execute_url(*)`, `mcp(*)`를 넣고 저장 후 다시 확인한다. 이후에는 새 프로젝트를 다시 만들지 않고 같은 UUID를 사용한다.
+3. 해당 UUID에서 `view_file`, `write_to_file`, `replace_file_content`, `run_command`를 합성 대상에 각각 한 번 시도한다. 실제 `TOOL_ERROR`와 `Matches user-configured deny rule.`, 파일/설정 불변·종료·후손 정리를 확인한다. 모델의 “거부했다”는 말만으로 증거를 만들지 않는다. 검증한 JSON 증거 형식은 `agy-project-core.mjs`의 `canaryEvidence`가 정의한다.
+4. 검증 증거와 프로젝트 UUID·폴더를 주담당이 검토한 뒤 아래 실행기에 전달한다. 이번 증거는 로컬 임시 폴더에 보존하고 Git에는 올리지 않았다. 다른 환경의 초기 준비를 자동화한 도구는 아니다.
+
+~~~powershell
+node agy-project-review.mjs .runtime/review-packet.json PROJECT_UUID 'C:\임시폴더\capstone-x001-policy-ID' 'C:\임시폴더\canary-result.json'
+~~~
+
+실제 01:19:50 KST 네 가지 도구 시도가 모두 명시적으로 거부됐다. **02:11:33 KST** Pro/High 설정·정상 검토 응답·종료 0·stderr 0·파일/전역설정/정책 불변·관측 후손 0을 확인했다. `--disable-slash-commands`와 효과가 없는 `--mode plan`을 함께 쓰면 경고가 나므로 Plan 옵션은 넣지 않는다. 실제 경계는 검증한 Project deny다.
+
+**02:18:30 KST** 원문 발췌 재검토도 같은 조건으로 통과했다. 처음 검토의 잘못된 경로/예외 지적은 실제 코드와 대조해 반영하지 않았고 재검토에서 확인했다. 긴 검토의 150초 timeout은 종료 0/SUCCESS와 빈 응답이어도 실패로 기록했다. 전체 로컬 검사는 최종 **72개 통과**다.
+
+결과는 `.runtime/latest-agy-project-review.json`에 최대 6,000자 응답·512자 오류 진단을 포함해 저장한다. 자동 첨부 방지를 위한 `@` 거부·24KB 전달문 한도는 유지한다. 코드는 중복 JSON 이스케이프로 오해하지 않도록 원문으로 전달한다. 150초 provider 제한·180초 실행 제한·별도 종료 관찰 한도가 있고, stderr/빈 응답/도구 활동/파일 변화/정리 불확실이면 실패한다. 현재 프로젝트의 권한 엔진 검증이며 OS 접근 차단, URL/MCP 실제 시도, 원격 모델 신원 인증은 아니다. 검토 의견은 실제 코드·스키마·검사와 대조해 채택한다.
 
 ## 현재 작업 브랜치 원격 반영
 
