@@ -20,6 +20,7 @@ export async function superviseManaged(file, args, {
   snapshot = processSnapshot, spawnHost = spawn, timeoutMs = 25000,
   cleanupTimeoutMs = 4000, helperSettleMs = 6000, pollMs = 200,
   maxBytes = 65536, snapshotTimeoutMs = 3000, cwd,
+  inspectPrepared = null, sessionKind = 'fixture',
 } = {}) {
   let child, tracker, reason, result, prepared, closed = false, exited = false;
   let disposeRequested = false, hostDisposedByOwner = false, descendantCleanupConfirmed = false;
@@ -53,6 +54,10 @@ export async function superviseManaged(file, args, {
     if (!hostDisposedByOwner) fail('OWNER_DISPOSE_FAILED');
   };
   try {
+    if (!['fixture', 'codex-exec-pty'].includes(sessionKind) ||
+        (sessionKind === 'codex-exec-pty' && typeof inspectPrepared !== 'function')) {
+      throw new Error('MANAGED_SESSION_KIND_INVALID');
+    }
     const baseline = validateSnapshot(await boundedSnapshot());
     if (!baseline.some((row) => row.pid === process.pid)) {
       throw new Error('CIM_SUPERVISOR_IDENTITY_UNCONFIRMED');
@@ -76,7 +81,8 @@ export async function superviseManaged(file, args, {
       if (message?.type === 'host-ready' && !hostReady && !prepared && !result) {
         hostReady = true;
       } else if (message?.type === 'prepared' && hostReady && !prepared && !result &&
-          Number.isSafeInteger(message.fixturePid) && Number.isSafeInteger(message.childPid)) {
+          Number.isSafeInteger(message.fixturePid) &&
+          (Number.isSafeInteger(message.childPid) || inspectPrepared)) {
         prepared = message;
       } else if (message?.type === 'result' && !result) {
         result = message;
@@ -93,18 +99,29 @@ export async function superviseManaged(file, args, {
       await read();
       if (exited || closed) throw new Error('HOST_EXITED_BEFORE_OWNER_DISPOSE');
       if (reason) throw new Error(reason);
+      if (result?.status === 'FAIL') throw new Error(sessionKind === 'codex-exec-pty' &&
+        result.cliEvidence?.reason === 'INTERRUPT_NOT_OBSERVED' ? 'INTERRUPT_NOT_OBSERVED' : 'PTY_RESULT_INVALID');
       if (hostReady && !goSent) {
         send('go'); // No PTY may be created until the live owner's CIM identity is captured.
         goSent = true;
       }
       if (prepared && !finishSent) {
+        if (inspectPrepared) {
+          const inspected = inspectPrepared(prepared, tracker);
+          if (!inspected) { await sleep(pollMs); continue; }
+          prepared = { ...prepared, ...inspected };
+        }
         if (!tracker.hasFixture(prepared.fixturePid) || !tracker.hasFixture(prepared.childPid)) {
           throw new Error('FIXTURE_IDENTITY_UNCONFIRMED');
         }
         if (!tracker.conhostPids().some((pid) => tracker.hasFixture(pid))) {
           throw new Error('CONSOLE_HOST_IDENTITY_UNCONFIRMED');
         }
-        send('finish');
+        if (inspectPrepared) {
+          child.send({ type: 'finish', childPid: prepared.childPid }, (error) => {
+            if (error) fail('HOST_IPC_ERROR');
+          });
+        } else send('finish');
         finishSent = true;
       }
       if (result) {
@@ -112,8 +129,11 @@ export async function superviseManaged(file, args, {
         if (!finishSent || !ptyExitObserved || result.finalOutputCollected !== true ||
             result.status !== 'READY_FOR_OWNER_DISPOSE' || !Array.isArray(result.checks) ||
             !result.checks.length || result.checks.some((check) => check?.status !== 'PASS') ||
+            (sessionKind === 'codex-exec-pty' && (result.cliEvidence?.passed !== true ||
+              result.cliEvidence?.cliResolvedConfigConfirmed !== true)) ||
             result.fixturePid !== prepared.fixturePid || result.childPid !== prepared.childPid) {
-          throw new Error('PTY_RESULT_INVALID');
+          throw new Error(sessionKind === 'codex-exec-pty' &&
+            result.cliEvidence?.reason === 'INTERRUPT_NOT_OBSERVED' ? 'INTERRUPT_NOT_OBSERVED' : 'PTY_RESULT_INVALID');
         }
         // HPCON/conhost can live until this dedicated host is disposed. Require
         // fixture identities gone here; audit every observed helper after close.
@@ -160,7 +180,12 @@ export async function superviseManaged(file, args, {
     if (!closed) { child?.unref(); child?.channel?.unref(); }
   }
   const ok = !reason && closed && exited && hostDisposedByOwner && descendantCleanupConfirmed;
-  return { status: ok ? 'PASS_MANAGED_FIXTURE_ONLY' : 'FAIL', reason: reason || null, checks,
+  return { status: ok ? (sessionKind === 'codex-exec-pty' ? 'PASS_CODEX_EXEC_PTY' :
+    'PASS_MANAGED_FIXTURE_ONLY') : 'FAIL', reason: reason || null, checks,
+    workerFailureReason: result?.reason || result?.cliEvidence?.reason || null,
+    ...(sessionKind === 'codex-exec-pty' ? { cliEvidence: result?.cliEvidence ?? null,
+      ptyRootIdentity: prepared?.rootIdentity ?? prepared?.shellIdentity ?? null,
+      actualCliIdentity: prepared?.cliIdentity ?? null, ptyShellIdentity: prepared?.shellIdentity ?? null } : {}),
     nativeNaturalExit: false, nativeNaturalExitTest: 'NOT_ATTEMPTED_MANAGED_HOST',
     hostDisposedByOwner, hostCloseObserved: closed, hostExitObserved: exited,
     hostExitCode: closeCode, hostExitSignal: closeSignal, ptyExitObserved,

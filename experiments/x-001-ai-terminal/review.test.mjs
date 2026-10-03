@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdtemp, mkdir, writeFile, unlink } from 'node:fs/promises';
 import { capture, cmdInvocation, requiredFlags, terminalExitCode, runtime } from './lib.mjs';
-import { chooseModel, checkCodexEnv, parseCatalog, parsePacket, validatePacket, codexEvidence, codexTextEvidence, geminiEvidence, verdict } from './review-core.mjs';
+import { chooseModel, checkCodexEnv, parseCatalog, parsePacket, validatePacket, promptFor, codexEvidence, codexTextEvidence, geminiEvidence, verdict } from './review-core.mjs';
 import { checkUserSettings, checkGeminiEnv } from './gemini-guard.mjs';
 import { snapshot } from './snapshot.mjs';
 import { parseAgyHelp } from './agy-help.mjs';
@@ -114,6 +114,14 @@ test('Gemini init is configuration only; missing stats cannot verify model', () 
   const evidence = geminiEvidence(result, 'gemini-3.1-pro-preview');
   assert.equal(evidence.exactModelConfirmed, false);
   assert.equal(verdict(result, evidence), 'RESPONSE_OBSERVED_MODEL_UNCONFIRMED');
+});
+
+test('Review source preserves literal backslashes and newlines without a second JSON escape layer', () => {
+  const content = String.raw`cwd.replaceAll('\\', '/');` + '\nconst text = "한글";';
+  const packet = { taskId: 'X-001', baseCommit: 'a'.repeat(40), scope: 'source transfer',
+    verification: 'source fidelity', remaining: 'runtime', reviewFocus: 'literal code', content };
+  assert.ok(promptFor(packet).includes('\n' + content + '\n'));
+  assert.throws(() => promptFor({ ...packet, content: '@private.md' }), /AT_FILE/u);
 });
 test('Gemini lower-model usage and tool calls cannot count as successful review', () => {
   const output = (models, tools = []) => ({ code: 0, stdout: [
