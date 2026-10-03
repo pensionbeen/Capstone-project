@@ -1,0 +1,275 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { bulkEvidence } from './managed-output.mjs';
+import { SessionProcesses, validateSnapshot, excludeSnapshotObserver } from './managed-processes.mjs';
+import { managedPlan, runManagedPlan, superviseManaged } from './managed-supervisor.mjs';
+
+const row = (pid, parent, age, name = 'node.exe') =>
+  ({ pid, parent, created: new Date(age).toISOString(), name });
+const prepared = { type: 'prepared', fixturePid: 19001, childPid: 19002 };
+const result = { type: 'result', fixturePid: 19001, childPid: 19002,
+  status: 'READY_FOR_OWNER_DISPOSE', ptyExitObserved: true, finalOutputCollected: true,
+  checks: [{ id: 'fake-pty-only', status: 'PASS' }] };
+
+test('CIM excludes only its exact query child and observed descendants, never names alone', () => {
+  const supervisor = row(90, 4, 500);
+  const unrelated = row(333, 4, 1000, 'conhost.exe');
+  const fixture = row(444, 90, 1000);
+  const fixtureConsole = row(445, 444, 2000, 'conhost.exe');
+  const rows = [supervisor, row(100, 90, 1000, 'powershell.exe'),
+    row(101, 100, 2000, 'conhost.exe'), unrelated, fixture, fixtureConsole];
+  assert.deepEqual(excludeSnapshotObserver(rows, 100, 90), [supervisor, unrelated, fixture, fixtureConsole]);
+  assert.throws(() => excludeSnapshotObserver(rows, 100, 777));
+  assert.throws(() => excludeSnapshotObserver(rows, 999, 90));
+});
+
+test('CIM query exclusions retain captured helpers and never suppress reused PIDs', () => {
+  const supervisor = row(90, 4, 500);
+  const known = new Set();
+  const oldHelper = row(101, 100, 2000, 'conhost.exe');
+  excludeSnapshotObserver([supervisor, row(100, 90, 1000), oldHelper], 100, 90, known);
+  assert.deepEqual(excludeSnapshotObserver([supervisor, row(200, 90, 3000), oldHelper], 200, 90, known), [supervisor]);
+  const reused = row(101, 999, 4000, 'conhost.exe');
+  assert.deepEqual(excludeSnapshotObserver([supervisor, row(300, 90, 5000), reused], 300, 90, known), [supervisor, reused]);
+  const older = row(301, 300, 4000, 'conhost.exe');
+  assert.deepEqual(excludeSnapshotObserver([supervisor, row(300, 90, 5000), older], 300, 90), [supervisor, older]);
+});
+
+test('External consoles need a live ancestry chain to an exact unrelated baseline identity', () => {
+  const supervisor = row(90, 4, 500);
+  const editor = row(500, 4, 500, 'editor.exe');
+  const host = row(100, 90, 1000);
+  const git = row(501, 500, 2000, 'git.exe');
+  const consoleHost = row(502, 501, 3000, 'conhost.exe');
+  const tracking = new SessionProcesses([supervisor, editor], 100, 90);
+  tracking.observe([supervisor, editor, host, git, consoleHost]);
+  assert.equal(tracking.uncertain, false);
+  assert.deepEqual(tracking.relatedPids(), [100]);
+  assert.equal(tracking.externalConsoles.size, 1);
+  const previousChild = row(600, 90, 700);
+  const underSupervisor = new SessionProcesses([supervisor, previousChild], 100, 90);
+  underSupervisor.observe([supervisor, previousChild, host, row(601, 600, 2000, 'conhost.exe')]);
+  assert.equal(underSupervisor.uncertain, true, 'baseline supervisor descendants are not external ancestors');
+  for (const rows of [[supervisor, editor, host, consoleHost],
+    [supervisor, row(500, 4, 4000), host, git, consoleHost],
+    [supervisor, host, row(501, 90, 2000), consoleHost]]) {
+    const uncertain = new SessionProcesses([supervisor, editor], 100, 90);
+    uncertain.observe(rows);
+    assert.equal(uncertain.uncertain, true);
+  }
+});
+
+async function fakeSession({ afterResult = '', omitResult = false, remaining = false,
+  rejectKill = false, snapshotFailure = false, helperUntilClose = false,
+  noConsole = false, emptyAfterClose = false, hangSnapshot = false, ...options } = {}) {
+  let child, stage = 'before', closed = false, scans = 0;
+  const supervisorRow = row(process.pid, 4, 500);
+  const commands = [];
+  const script = `process.send({type:'host-ready'});
+    process.on('message', m => {
+      if(m.type==='go') process.send(${JSON.stringify(prepared)});
+      if(m.type==='finish') {
+        ${omitResult ? '' : 'process.send(' + JSON.stringify(result) + ');'}
+        ${afterResult}
+      }
+      if(m.type==='abort') process.send({type:'result',status:'FAIL'});
+    });`;
+  try {
+    const observed = await superviseManaged(process.execPath, ['-e', script], {
+      timeoutMs: 2000, cleanupTimeoutMs: 150, helperSettleMs: 100, pollMs: 10,
+      spawnHost(file, args, spawnOptions) {
+        assert.equal(scans, 1, 'first successful CIM precedes host spawn');
+        child = spawn(file, args, spawnOptions);
+        const send = child.send.bind(child);
+        child.send = (message, callback) => {
+          commands.push(message.type);
+          if (message.type === 'go') assert.ok(scans >= 2, 'owner identity precedes PTY go');
+          return send(message, callback);
+        };
+        child.on('message', (message) => {
+          if (message.type === 'prepared') stage = 'prepared';
+          if (message.type === 'result') stage = 'result';
+        });
+        child.once('close', () => { closed = true; });
+        if (rejectKill) child.kill = () => false;
+        return child;
+      },
+      snapshot: async () => {
+        scans++;
+        if (!child) return [supervisorRow];
+        if (hangSnapshot && scans > 2) return new Promise(() => {});
+        if (emptyAfterClose && closed) return [];
+        if (snapshotFailure && scans > 2) throw new Error('CIM_SNAPSHOT_FAILED');
+        const rows = closed ? [supervisorRow] : [supervisorRow, row(child.pid, process.pid, 1000)];
+        if (stage === 'prepared' || (remaining && stage === 'result')) {
+          rows.push(row(19001, child.pid, 2000), row(19002, 19001, 3000));
+          if (!noConsole) rows.push(row(19003, child.pid, 2000, 'conhost.exe'));
+        }
+        if (helperUntilClose && stage === 'result' && !closed) {
+          rows.push(row(19003, child.pid, 2000, 'conhost.exe'));
+        }
+        return rows;
+      }, ...options,
+    });
+    return { observed, commands, child, closed };
+  } finally {
+    if (child && !closed) {
+      child.kill = Object.getPrototypeOf(child).kill;
+      child.kill(); // Test cleanup uses only its actual owned handle.
+      await new Promise((resolve) => child.once('close', resolve));
+    }
+  }
+}
+
+test('Managed host passes only after owner disposal, real close, and captured identities disappear', async () => {
+  const { observed, commands, closed } = await fakeSession({ helperUntilClose: true });
+  assert.equal(observed.status, 'PASS_MANAGED_FIXTURE_ONLY');
+  assert.equal(observed.nativeNaturalExit, false);
+  assert.equal(observed.nativeNaturalExitTest, 'NOT_ATTEMPTED_MANAGED_HOST');
+  assert.equal(observed.hostDisposedByOwner, true);
+  assert.equal(observed.hostCloseObserved, true);
+  assert.equal(observed.descendantCleanupConfirmed, true);
+  assert.deepEqual(observed.conhostPids, [19003]);
+  assert.deepEqual(commands, ['go', 'finish']);
+  assert.equal(closed, true);
+});
+
+test('Late helper stderr after PTY result is collected before pass and prevents second session', async () => {
+  let calls = 0;
+  const modes = await runManagedPlan(async () => {
+    calls++;
+    return (await fakeSession({ afterResult: "setTimeout(() => process.stderr.write('AttachConsole failed'), 50);" })).observed;
+  });
+  assert.equal(calls, 1);
+  assert.equal(modes[0].reason, 'HOST_STDERR');
+  assert.equal(modes[0].hostCloseObserved, true);
+  assert.ok(modes.slice(1).every((mode) => mode.status === 'NOT_RUN'));
+});
+
+test('Missing PTY result times out and owner host disposal never substitutes for PTY exit', async () => {
+  let calls = 0;
+  const modes = await runManagedPlan(async () => {
+    calls++;
+    return (await fakeSession({ omitResult: true, timeoutMs: 200 })).observed;
+  });
+  assert.equal(calls, 1);
+  assert.equal(modes[0].status, 'FAIL');
+  assert.equal(modes[0].ptyExitObserved, false);
+  assert.equal(modes[0].hostDisposedByOwner, true);
+  assert.equal(modes[0].hostCloseObserved, true);
+});
+
+test('Captured remaining descendants and CIM failure block later sessions', async () => {
+  for (const config of [{ remaining: true, timeoutMs: 250 }, { snapshotFailure: true }]) {
+    const { observed } = await fakeSession(config);
+    assert.equal(observed.status, 'FAIL');
+    assert.equal(observed.descendantCleanupConfirmed, false);
+    assert.equal(observed.nextExecutionBlocked, true);
+  }
+});
+
+test('Rejected owner termination cannot claim host close and uses a bounded deadline', async () => {
+  const started = Date.now();
+  const { observed } = await fakeSession({ rejectKill: true });
+  assert.equal(observed.hostDisposedByOwner, false);
+  assert.equal(observed.hostCloseObserved, false);
+  assert.equal(observed.status, 'FAIL');
+  assert.ok(Date.now() - started < 1800);
+});
+
+test('Invalid/incomplete CIM snapshot blocks spawn rather than becoming an empty process list', async () => {
+  let spawned = false;
+  const observed = await superviseManaged('unused', [], {
+    snapshot: async () => [{ pid: 8, parent: 4, name: 'node.exe' }],
+    spawnHost: () => { spawned = true; },
+  });
+  assert.equal(spawned, false);
+  assert.equal(observed.status, 'FAIL');
+  assert.throws(() => validateSnapshot(null));
+  assert.throws(() => validateSnapshot([row(8, 4, 1000), row(8, 4, 2000)]));
+});
+
+test('Creation identities retain reparented helpers, avoid PID reuse, and reject unrelated new console hosts', () => {
+  const supervisor = row(90, 4, 500);
+  const tracking = new SessionProcesses([supervisor], 100, 90);
+  tracking.observe([supervisor, row(100, 90, 1000), row(101, 100, 2000), row(102, 101, 3000, 'conhost.exe')]);
+  tracking.observe([supervisor, row(100, 90, 1000), row(102, 4, 3000, 'conhost.exe'), row(101, 4, 4000)]);
+  assert.deepEqual(tracking.alive({ includeOwner: false }), [102]);
+  assert.equal(tracking.hasFixture(101), false, 'reused PID is not captured fixture identity');
+  tracking.observe([supervisor, row(100, 90, 1000), row(777, 4, 5000, 'OpenConsole.exe')]);
+  assert.equal(tracking.uncertain, true);
+  assert.ok(!tracking.relatedPids().includes(777), 'unrelated PID is not exposed as owned');
+});
+
+test('Empty, missing, or reused supervisor identity never proves descendant cleanup', async () => {
+  const supervisor = row(90, 4, 500);
+  const tracking = new SessionProcesses([supervisor], 100, 90);
+  tracking.observe([supervisor, row(100, 90, 1000)]);
+  assert.throws(() => tracking.observe([]));
+  assert.throws(() => tracking.observe([row(777, 4, 2000)]));
+  assert.throws(() => tracking.observe([row(90, 4, 3000)]));
+  const { observed } = await fakeSession({ snapshot: async () => [] });
+  assert.equal(observed.status, 'FAIL');
+  assert.equal(observed.descendantCleanupConfirmed, false);
+  const afterClose = (await fakeSession({ emptyAfterClose: true })).observed;
+  assert.equal(afterClose.hostCloseObserved, true);
+  assert.equal(afterClose.descendantCleanupConfirmed, false);
+  assert.equal(afterClose.status, 'FAIL');
+});
+
+test('Live fixture identities without a captured console host cannot pass or start the next session', async () => {
+  let attempted = 0;
+  const modes = await runManagedPlan(async () => {
+    attempted++;
+    return (await fakeSession({ noConsole: true })).observed;
+  });
+  assert.equal(attempted, 1);
+  assert.equal(modes[0].reason, 'CONSOLE_HOST_IDENTITY_UNCONFIRMED');
+  assert.equal(modes[0].status, 'FAIL');
+  assert.ok(modes.slice(1).every((mode) => mode.status === 'NOT_RUN'));
+});
+
+test('Managed plan runs ten sequential restarts only after each prior audit passes', async () => {
+  const indices = [];
+  const modes = await runManagedPlan(async (mode, index) => {
+    indices.push(index);
+    return { status: 'PASS_MANAGED_FIXTURE_ONLY', nextExecutionBlocked: false,
+      hostDisposedByOwner: true, descendantCleanupConfirmed: true };
+  });
+  assert.equal(managedPlan.length, 13);
+  assert.equal(modes.filter((mode) => mode.mode === 'restart').length, 10);
+  assert.deepEqual(indices, Array.from({ length: 13 }, (_, index) => index));
+});
+
+test('Bulk evidence requires actual line boundaries, sequence, byte count and hash', () => {
+  const nonce = 'abcdef012345';
+  const payload = [0, 1].map(n => 'X001_BURST_' + nonce + ' ' + String(n).padStart(4, '0') + ' abcdef0123456789\n').join('');
+  const expected = { lines: 2, bytes: Buffer.byteLength(payload), hash: createHash('sha256').update(payload).digest('hex') };
+  assert.equal(bulkEvidence(payload, nonce, expected).pass, true);
+  assert.equal(bulkEvidence(payload.replaceAll('\n', '\r\n'), nonce, expected).pass, true);
+  assert.equal(bulkEvidence(payload.replaceAll('\n', ''), nonce, expected).pass, false);
+  assert.equal(bulkEvidence(payload.trimEnd(), nonce, expected).pass, false);
+  assert.equal(bulkEvidence(payload.replace('0001', '0000'), nonce, expected).pass, false);
+});
+
+test('A late worker fault after a valid result prevents managed PASS', async () => {
+  const { observed } = await fakeSession({ afterResult: "setTimeout(() => process.send({type:'fault'}), 25);" });
+  assert.equal(observed.status, 'FAIL');
+  assert.equal(observed.reason, 'HOST_REPORTED_LATE_FAULT');
+  assert.equal(observed.nextExecutionBlocked, true);
+});
+
+test('A snapshot promise that never resolves is bounded before and after host creation', async () => {
+  let spawned = false;
+  const before = await superviseManaged('unused', [], { snapshot: () => new Promise(() => {}),
+    snapshotTimeoutMs: 20, spawnHost: () => { spawned = true; throw Error('MUST_NOT_SPAWN'); } });
+  assert.equal(spawned, false);
+  assert.equal(before.reason, 'CIM_SNAPSHOT_TIMEOUT');
+  const { observed } = await fakeSession({ hangSnapshot: true, snapshotTimeoutMs: 20 });
+  assert.equal(observed.status, 'FAIL');
+  assert.equal(observed.reason, 'CIM_SNAPSHOT_TIMEOUT');
+  assert.equal(observed.hostCloseObserved, true);
+  assert.equal(observed.descendantCleanupConfirmed, false);
+});
