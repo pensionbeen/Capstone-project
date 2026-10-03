@@ -5,6 +5,10 @@ import { bulkEvidence } from './managed-output.mjs';
 
 const mode = process.argv[2];
 const useConptyDll = process.argv.length === 4 && process.argv[3] === '--conpty-dll';
+const electronFixture = process.versions.electron && process.argv.length === 6 &&
+  process.argv[3] === '--conpty-dll' && process.argv[4] === '--fixture-node' &&
+  path.isAbsolute(process.argv[5]) && path.basename(process.argv[5]).toLowerCase() === 'node.exe';
+const fixtureExecutable = electronFixture ? process.argv[5] : process.execPath;
 const nonce = randomBytes(6).toString('hex');
 let terminal, output = '', receivedBytes = 0, exitEvent, lastDataAt = 0;
 let fixturePid, childPid, aborted = false, started = false, finishing = false, resultSent = false;
@@ -24,12 +28,12 @@ const fault = () => { if (!faultSent) { faultSent = true; send({ type: 'fault' }
 async function prepare() {
   try {
     if (!['normal', 'forced', 'burst', 'restart'].includes(mode) ||
-        (process.argv.length !== 3 && !useConptyDll)) throw new Error('INVALID_MANAGED_MODE');
+        (process.argv.length !== 3 && !useConptyDll && !electronFixture)) throw new Error('INVALID_MANAGED_MODE');
     if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('WINDOWS_X64_REQUIRED');
     const pty = loadPty();
-    terminal = pty.spawn(process.execPath, [path.join(root, 'managed-fixture.mjs'), nonce], {
+    terminal = pty.spawn(fixtureExecutable, [path.join(root, 'managed-fixture.mjs'), nonce], {
       cwd: process.cwd(), cols: 96, rows: 30, name: 'xterm-256color',
-      env: process.env, useConpty: true, ...(useConptyDll ? { useConptyDll: true } : {}),
+      env: process.env, useConpty: true, ...((useConptyDll || electronFixture) ? { useConptyDll: true } : {}),
     });
     terminal.onData((text) => {
       if (resultSent && text.length) fault();

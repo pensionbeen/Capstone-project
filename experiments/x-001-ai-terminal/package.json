@@ -11,15 +11,18 @@
     "win32"
   ],
   "scripts": {
-    "test": "node --test lib.test.mjs review.test.mjs smoke.test.mjs managed.test.mjs",
+    "test": "node --test lib.test.mjs review.test.mjs smoke.test.mjs managed.test.mjs codex-exec-pty.test.mjs electron-probe.test.mjs terminal-text.test.mjs agy-project.test.mjs",
     "ai:capabilities": "node ai-capabilities.mjs",
     "ai:probe": "node ai-review.mjs --probe",
     "preflight": "node preflight.mjs",
     "smoke": "node pty-smoke.mjs",
     "smoke:managed": "node pty-managed.mjs",
+    "codex:exec:pty": "node codex-exec-pty.mjs --conpty-dll",
+    "electron:probe": "node electron-node-probe.mjs",
     "terminal": "node codex-terminal.mjs"
   },
   "dependencies": {
+    "@xterm/headless": "6.0.0",
     "node-pty": "1.1.0"
   }
 }
