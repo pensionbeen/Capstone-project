@@ -18,7 +18,7 @@
 
 선행 병합을 기다릴 수 없으면 선행 작업 브랜치의 **명시한 커밋**에서 후속 브랜치를 만들고 의존 관계를 기록한다. 후속 PR은 우선 선행 브랜치를 기준으로 하여 차이를 작게 유지할 수 있다. 병합 순서는 선행 → 후속이다. 선행을 main에 반영한 뒤 후속 브랜치로 최신 main을 merge하고 다시 검증한다. 이미 공유한 후속 이력을 강제 rebase/push하지 않는다. PR 생성 자체는 필수 조직 절차가 아니라 검토·차이 보관 수단이다.
 
-### 기존 저장소와 현재 세션의 네트워크 제한
+### 기존 저장소와 세션의 네트워크 제한 — D-002 당시 기록
 
 실제 작업 위치는 사용자가 지정한 `C:/Users/jbiho/dev/Capstone-project`다. origin은 `https://github.com/pensionbeen/Capstone-project.git`이다. 점검 당시 이 저장소에는 main이라는 초기 브랜치 이름과 원격 설정만 있었고 커밋·작업 파일·미커밋 변경은 없었다. 문서 초안을 만들었던 별도 로컬 폴더에서 검증한 커밋만 가져와 `docs/project-plan`을 만들었다. 기존 저장소를 다시 초기화하지 않았다.
 
@@ -65,7 +65,7 @@ if (($planRemote -split '\s+')[0] -ne $planLocal) {
 Write-Output "문서 브랜치 push 및 원격 해시 일치 확인: $planLocal"
 ```
 
-이전 `C:/Users/jbiho/source/repos/Capstone-project`는 보존한 초안 위치다. 이후 실제 작업은 dev 경로에서만 이어간다. 현재 커밋·동기화 결과는 STATUS와 날짜별 기록이 기준이다.
+이전 `C:/Users/jbiho/source/repos/Capstone-project`는 보존한 초안 위치다. 이후 실제 작업은 dev 경로에서만 이어간다. 15:24:48의 문서 브랜치 push 이력은 후속 T-001에서 확인했다. 위 명령은 docs/project-plan용이며 현재 T-001 작업 브랜치는 chore/t-001-environment다. 최신 상태·환경은 [STATUS](STATUS.md)와 [ENVIRONMENT](ENVIRONMENT.md), 날짜별 기록이 기준이다.
 
 ### 커밋할 파일
 
@@ -89,7 +89,7 @@ Markdown은 UTF-8로 저장한다. Windows PowerShell에서 읽을 때는 `Get-C
 
 ## 실행 환경·의존성
 
-현재 읽기 전용 확인 결과는 Git 2.45.1.windows.1, Node v24.15.0이다. PATH에서 `codex`·`gemini` 명령을 찾지 못했다. 이는 다른 경로나 앱에 설치되지 않았다는 증거가 아니다. Electron·React·TypeScript·Fastify·SQLite 드라이버·node-pty·xterm.js 설치·버전·호환성은 미확인이다.
+현재 환경과 명령의 실제 실행 결과는 [ENVIRONMENT](ENVIRONMENT.md)에 모은다. Windows에서는 사용자 지시에 따라 `codex.cmd`·`gemini.cmd`를 사용한다. 사용자 터미널의 버전 확인과 샌드박스의 실행 실패를 구분한다. Electron/node-pty 후보 선정은 설치·호환성 검증 완료를 뜻하지 않는다.
 
 패키지를 실제 설치할 후속 작업에서 package manifest와 lockfile을 함께 관리하고 Node·패키지 관리자·Electron·네이티브 모듈·Windows/CPU의 검증 조합을 기록한다. 버전 고정과 정기 보안 업데이트를 균형 있게 적용한다. 네이티브 모듈은 개발 실행뿐 아니라 패키지된 앱에서 다시 검증한다. 추가 라이선스·서명·API 비용은 예산 결정 후 선택한다.
 
