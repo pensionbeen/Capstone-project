@@ -6,6 +6,69 @@ import { capture, cmdInvocation, requiredFlags, terminalExitCode, runtime } from
 import { chooseModel, checkCodexEnv, parseCatalog, parsePacket, validatePacket, codexEvidence, codexTextEvidence, geminiEvidence, verdict } from './review-core.mjs';
 import { checkUserSettings, checkGeminiEnv } from './gemini-guard.mjs';
 import { snapshot } from './snapshot.mjs';
+import { parseAgyHelp } from './agy-help.mjs';
+
+// Sanitized option/command rows observed in agy 1.2.16, not a service response.
+const agyHelp = `Usage of agy.exe:
+  --add-dir                       Add a directory to the workspace (repeatable) (default [])
+  --disable-slash-commands        Disable slash command and skill expansion in print mode
+  --effort                        Reasoning effort for the current CLI session (low|medium|high|xhigh|max)
+  --input-format                  Input format for print mode; requires --output-format stream-json
+  --mode                          Set the agent execution mode for this session (accept-edits, plan)
+  --model                         Model for the current CLI session
+  --output-format                 Output format for print mode (text, json, stream-json) (default text)
+  --print                         Run a single prompt non-interactively and print the response
+  --print-timeout                 Optional time limit for print mode (default 0s)
+  --sandbox                       Run in a sandbox with terminal restrictions enabled
+
+Available subcommands:
+  agent           List available agents
+  agents          List available agents
+  changelog       Show changelog and release notes
+  help            Show help for subcommands
+  models          List available models
+`;
+
+test('Agy 1.2.16 help is recognized without a --help option, with LF or CRLF', () => {
+  for (const text of [agyHelp, agyHelp.replaceAll('\n', '\r\n')]) {
+    const result = parseAgyHelp(text);
+    assert.equal(result.formatConfirmed, true);
+    assert.equal(result.flags.includes('--help'), false);
+    assert.deepEqual(result.commands, ['models', 'agents']);
+    assert.equal(result.flags.length, 10);
+  }
+});
+
+test('Agy help rejects unrelated usage, missing headers, and option mentions in prose', () => {
+  for (const text of ['', agyHelp.replace('Usage of agy.exe:', 'Usage of other.exe:'),
+    agyHelp.replace('Usage of agy.exe:', 'Antigravity options:'),
+    agyHelp.replace('Available subcommands:', 'Other information:'),
+    'Antigravity agy --help --print --model --effort --mode --sandbox --output-format ' +
+      '--print-timeout --disable-slash-commands\n  models\n  agents']) {
+    assert.equal(parseAgyHelp(text).formatConfirmed, false);
+  }
+});
+
+test('Agy help requires every observed essential option declaration', () => {
+  for (const flag of ['--print', '--model', '--effort', '--mode', '--sandbox',
+    '--output-format', '--print-timeout', '--disable-slash-commands']) {
+    const incomplete = agyHelp.split('\n').filter((line) => !line.startsWith('  ' + flag + ' ')).join('\n');
+    assert.equal(parseAgyHelp(incomplete).formatConfirmed, false, flag);
+  }
+  assert.equal(parseAgyHelp(agyHelp.replace('  --print ', '  --print-more ')).formatConfirmed, false);
+  assert.equal(parseAgyHelp(agyHelp.replace(/  --sandbox[^\n]+/u,
+    '  --sandbox\nAgy supports --sandbox')).formatConfirmed, false);
+});
+
+test('Agy help requires models and agents declarations in the subcommand section', () => {
+  for (const command of ['models', 'agents']) {
+    const incomplete = agyHelp.split('\n').filter((line) => !line.startsWith('  ' + command + ' ')).join('\n');
+    assert.equal(parseAgyHelp(incomplete).formatConfirmed, false, command);
+    const misplaced = incomplete.replace('Available subcommands:',
+      '  ' + command + '          Mentioned before the section\nAvailable subcommands:');
+    assert.equal(parseAgyHelp(misplaced).formatConfirmed, false, command);
+  }
+});
 
 const models = [
   { id: 'gpt-6.1-sol', efforts: ['high', 'max'] },

@@ -26,6 +26,8 @@
 | 독립 설계·코드 검토 | 실제 선택 가능한 **Gemini Pro 계열** | 다른 관점의 대안·누락 확인. 정확한 모델 ID·프리뷰 여부·한도 기록 |
 | 작은 문서/기록 정리 | 현재 확인된 모델 또는 Sol / High | 신규 구조/핵심 범위 판단이 섞이면 위 기준 적용 |
 
+2026-10-03 사용자 후속 결정: Gemini Pro 사용량에 여유가 있으므로 검증에 적극 활용한다. 중요한 변경의 독립 검토·실패 원인·테스트 누락 확인에 우선 사용하고, 서로 다른 관점이 필요하면 검토를 나눈다. 이는 계정의 잔여량을 직접 측정했다는 뜻이 아니다. Pro 모델 확인·읽기 전용 경계·결과 대조 규칙은 유지하며 Flash로 조용히 대체하지 않는다.
+
 Astra 사용 가능 여부와 지원 설정은 계정·앱·CLI·배포 상태에 따라 확인한다. API 모델 문서는 Astra와 GPT-6.1 Sol에 `low/medium/high/xhigh/max`를 명시하지만, Codex/ChatGPT의 Ultra 운영 방식과 같은 것으로 간주하지 않는다. [Astra API](https://developers.openai.com/api/docs/models/gpt-6-astra), [Sol API](https://developers.openai.com/api/docs/models/gpt-6.1-sol)
 
 공식 제품 문서에서 Max는 한 어려운 작업에 더 깊은 추론, Ultra는 나눌 수 있는 작업에 하위 에이전트를 활용하는 방식으로 설명한다. CLI 모델 목록·실제 실행 표시와 결과를 함께 확인한다. X-001에서 내장 보조 에이전트에 Astra/Ultra를 요청해 응답을 회수했으나 실제 실행 모델을 독립 표시로 확인하지 못했다. 이를 설치된 CLI의 Max/Ultra 지원 증거로 쓰지 않는다. [공식 모델 안내](https://learn.chatgpt.com/docs/models)
@@ -49,6 +51,8 @@ Astra 사용 가능 여부와 지원 설정은 계정·앱·CLI·배포 상태�
 기존 Gemini CLI 어댑터의 후보는 gemini-3.1-pro-preview다. init.model은 설정값, 최종 모델별 사용 통계는 CLI 관측 근거다. 다른 모델이면 결과를 버리고 알린다. 사용자 후속 증거는 **Antigravity 1.1.10 / Google AI Pro / Gemini 3.1 Pro (High)**다. 기존 Google 로그인을 사용하며 Gemini CLI의 설정을 이 계정 인증 증거로 대입하지 않는다. Antigravity 후보 식별자·옵션은 설치 버전 도움말/목록을 확인한 뒤 확정한다. 현재 Gemini CLI 어댑터를 agy.exe에 그대로 적용하거나 재로그인/API 전환을 요구하지 않는다.
 
 Antigravity 기본 비대화 실행은 작업폴더 쓰기를 허용한다. 명시적 읽기 전용 제한을 확인하기 전에는 검토를 자동 실행하지 않는다. 전역 보안/인증 설정을 수정하거나 모델을 조용히 낮추지 않는다. [Antigravity 비대화 실행](https://antigravity.google/docs/cli/headless/), [권한](https://antigravity.google/docs/permissions/). Gemini CLI의 Plan 모드만으로 읽기 전용이라 주장하지 않는 기존 규칙도 유지한다. [Gemini Plan Mode](https://geminicli.com/docs/cli/plan-mode/)
+
+WL-09에서 실제 설치된 Antigravity는 **1.2.16**, 목록의 Pro 식별자는 **gemini-3.1-pro-high**였다. 질문을 보내기 전 스트리밍 시작 정보만 조사했으며, `tools: []`와 `tools: [view_file]`를 지정한 맞춤 에이전트 모두 쓰기·명령 실행 도구가 표시됐다. 명시한 에이전트 이름·Pro 설정 표시만으로 제한 적용을 인정하지 않았고 사용자 메시지 0회·EOF 종료·기존 설정 불변을 확인했다. 실제 Gemini 검토는 미실행이다. 과거 1.1.10 사용자 배너는 당시 이력으로 남긴다.
 
 ### 현재 대화 모델·쓰기 담당 인계
 

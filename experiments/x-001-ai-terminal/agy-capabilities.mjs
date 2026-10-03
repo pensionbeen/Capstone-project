@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { capture, fileState, report } from './lib.mjs';
+import { parseAgyHelp } from './agy-help.mjs';
 
 // Antigravity is a separate executable from the npm Gemini CLI.
 // Inspect version/help only: no prompt, login, credentials, or global edits.
@@ -22,10 +23,10 @@ if (!blocked) {
       if (row.version === 'UNCONFIRMED') row.error = 'VERSION_FORMAT_UNCONFIRMED';
     }
     else {
-      row.flags = [...new Set(text.match(/--[a-z][a-z0-9-]*/gu) ?? [])].sort();
-      row.commands = ['models', 'agents'].filter((name) => new RegExp('^\\s*' + name + '(?:\\s|$)', 'mu').test(text));
-      if (!row.flags.includes('--help') || !/antigravity|\bagy\b/iu.test(text))
-        row.error = 'HELP_FORMAT_UNCONFIRMED';
+      const help = parseAgyHelp(text);
+      row.flags = help.flags;
+      row.commands = help.commands;
+      if (!help.formatConfirmed) row.error ??= 'HELP_FORMAT_UNCONFIRMED';
     }
     checks.push(row);
     if (row.error || result.code !== 0) { blocked = true; break; }
