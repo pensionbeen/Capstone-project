@@ -2,7 +2,7 @@
 
 터미널 AI의 요구분석·기능 관리·실행·기록을 연결하고, Windows OS 파일 보호와 같은 네트워크의 기기 간 파일 전송을 제공하는 졸업작품의 개발계획이다.
 
-**작업 저장소는 `C:/Users/jbiho/dev/Capstone-project`, 문서 브랜치는 `docs/project-plan`이다.** 사용자가 지정한 기존 저장소를 확인한 뒤 문서 커밋을 가져왔다. 이 세션은 GitHub HTTPS 연결이 차단되어 원격 조회·푸시가 미완료다. GitHub 플러그인은 Git push의 필수 조건이 아니다. 기능 구현·애플리케이션 테스트·설치·보안 설정 변경·main 병합은 이번에 수행하지 않았다.
+**작업 저장소는 `C:/Users/jbiho/dev/Capstone-project`다.** 문서 기준은 `docs/project-plan`의 `f8730ac`이며, 현재 T-001 준비는 `chore/t-001-environment`에서 진행한다. Git 원격 추적 이력에 문서 브랜치 push 기록이 확인됐으며 현재 세션의 실시간 원격 조회는 제한된다. 최신 커밋·push 상태는 STATUS를 따른다. 기능 구현·패키지 설치·시스템 보안 변경·main 병합은 아직 수행하지 않았다.
 
 ## 읽는 순서
 
@@ -11,7 +11,8 @@
 3. [프로토타입부터 최종 제출까지 로드맵](docs/ROADMAP.md)
 4. [작업별 완료·검증 기준과 요구사항 추적](docs/TASKS.md)
 5. 필요할 때 [구조·기술 실험](docs/ARCHITECTURE.md), [AI 협업·모델·기록](docs/AI_WORKFLOW.md), [Git·개발·복구 규칙](docs/DEVELOPMENT_RULES.md)
-6. [이번 실제 작업 기록](docs/work-log/2026-10-03.md)
+6. 개발 준비에는 [T-001 환경·CLI·버전 후보 결과](docs/ENVIRONMENT.md)
+7. [이번 실제 작업 기록](docs/work-log/2026-10-03.md)
 
 AI 시작 지침은 [AGENTS.md](AGENTS.md), 독립 검토 지침은 [GEMINI.md](GEMINI.md)에 있다.
 

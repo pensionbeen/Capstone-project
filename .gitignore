@@ -1,0 +1,64 @@
+# Dependencies and package-manager caches (keep manifests and lockfiles)
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.pnp.*
+
+# Local environment and credentials; templates must contain dummy values only
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.template
+.npmrc
+.secrets/
+.credentials/
+auth.json
+credentials.json
+oauth_creds.json
+token.json
+tokens.json
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Local AI credentials, sessions, and private settings (root AGENTS/GEMINI stay shared)
+.codex/
+.gemini/
+
+# Runtime databases, sidecar files, logs, and local recovery copies
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.log
+logs/
+.runtime/
+local-data/
+backups/
+*.pid
+*.pid.lock
+
+# Generated app/build/test output
+/build/
+dist/
+out/
+release/
+coverage/
+.nyc_output/
+.vite/
+.cache/
+*.tsbuildinfo
+tmp/
+temp/
+
+# OS/editor local files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
