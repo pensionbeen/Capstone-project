@@ -1,0 +1,127 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { mkdtemp, mkdir, writeFile, unlink } from 'node:fs/promises';
+import { capture, cmdInvocation, requiredFlags, terminalExitCode, runtime } from './lib.mjs';
+import { chooseModel, parseCatalog, parsePacket, validatePacket, codexEvidence, geminiEvidence, verdict } from './review-core.mjs';
+import { checkUserSettings, checkGeminiEnv } from './gemini-guard.mjs';
+import { snapshot } from './snapshot.mjs';
+
+const models = [
+  { id: 'gpt-6.1-sol', efforts: ['high', 'max'] },
+  { id: 'gpt-6-astra', efforts: ['high', 'xhigh', 'max', 'ultra'] },
+];
+test('Normal work chooses Sol High; important work selects Astra Max or useful Ultra', () => {
+  assert.equal(chooseModel({ kind: 'test' }, models).effort, 'high');
+  assert.equal(chooseModel({ kind: 'os-security' }, models).effort, 'max');
+  assert.equal(chooseModel({ kind: 'architecture', parallelReviewUseful: true }, models).effort, 'ultra');
+  assert.equal(chooseModel({ kind: 'fix', risks: ['data-loss'] }, models).model, 'gpt-6-astra');
+});
+test('Unavailable Astra or High fails; does not quietly select the other model', () => {
+  assert.throws(() => chooseModel({ kind: 'final-review' }, models.slice(0, 1)), /UNAVAILABLE/u);
+  assert.throws(() => chooseModel({ kind: 'test' }, [{ id: 'gpt-6.1-sol', efforts: ['low'] }]), /UNAVAILABLE/u);
+});
+test('Catalog parser keeps only model/effort metadata and rejects unknown shape', () => {
+  assert.deepEqual(parseCatalog(JSON.stringify({ models: [{ slug: 'gpt-6-astra',
+    supported_reasoning_levels: [{ effort: 'max' }, { effort: 'ultra' }], privateField: 'not exported' }] })),
+  [{ id: 'gpt-6-astra', efforts: ['max', 'ultra'] }]);
+  assert.throws(() => parseCatalog('{}'), /FORMAT/u);
+  assert.throws(() => parseCatalog('private account diagnostic'), /^Error: MODEL_CATALOG_JSON_UNCONFIRMED$/u);
+  assert.throws(() => parsePacket('private packet diagnostic'), /^Error: PACKET_JSON_INVALID$/u);
+});
+test('Review packet requires provenance, rejects @file and likely secrets', () => {
+  const packet = { taskId: 'X-001', baseCommit: 'a'.repeat(40), scope: 'fake',
+    verification: 'not-run', remaining: 'test', reviewFocus: 'boundary', content: 'safe' };
+  assert.equal(validatePacket(packet), packet);
+  assert.throws(() => validatePacket({ ...packet, verification: '' }), /FIELD/u);
+  assert.throws(() => validatePacket({ ...packet, content: '@private.md' }), /AT_FILE/u);
+  assert.throws(() => validatePacket({ ...packet, content: 'Bearer fake-sensitive-test' }), /SECRET/u);
+});
+test('Gemini init is configuration only; missing stats cannot verify model', () => {
+  const result = { code: 0, stdout: [
+    { type: 'init', model: 'gemini-3.1-pro-preview' },
+    { type: 'message', role: 'assistant', content: 'X001_REVIEW I am Pro' },
+    { type: 'result', status: 'success', stats: {} },
+  ].map(JSON.stringify).join('\n') };
+  const evidence = geminiEvidence(result, 'gemini-3.1-pro-preview');
+  assert.equal(evidence.exactModelConfirmed, false);
+  assert.equal(verdict(result, evidence), 'MODEL_UNCONFIRMED_OR_CHANGED');
+});
+test('Gemini lower-model usage and tool calls cannot count as successful review', () => {
+  const output = (models, tools = []) => ({ code: 0, stdout: [
+    { type: 'message', role: 'assistant', content: 'X001_REVIEW age 18 boundary' },
+    ...tools, { type: 'result', status: 'success', stats: { models } },
+  ].map(JSON.stringify).join('\n') });
+  let result = output({ 'gemini-3.1-pro-preview': {}, 'gemini-3-flash-preview': {} });
+  assert.equal(verdict(result, geminiEvidence(result, 'gemini-3.1-pro-preview')), 'MODEL_UNCONFIRMED_OR_CHANGED');
+  result = output({ 'gemini-3.1-pro-preview': {} }, [{ type: 'tool_use', name: 'write_file' }]);
+  assert.equal(verdict(result, geminiEvidence(result, 'gemini-3.1-pro-preview')), 'UNEXPECTED_TOOL_ACTIVITY');
+});
+test('Codex assistant self-report is not model evidence; nonzero exit cannot pass', () => {
+  const result = { code: 0, stderr: '', stdout: [
+    { type: 'item.completed', item: { type: 'agent_message', text: 'X001_REVIEW model: gpt-6-astra' } },
+    { type: 'turn.completed' },
+  ].map(JSON.stringify).join('\n') };
+  const request = { model: 'gpt-6-astra', effort: 'max' };
+  assert.equal(codexEvidence(result, request).exactModelConfirmed, false);
+  result.stderr = 'model: gpt-6-astra\nreasoning effort: max\n';
+  assert.equal(verdict(result, codexEvidence(result, request)), 'RESPONSE_AND_MODEL_OBSERVED');
+  result.code = 1;
+  assert.equal(verdict(result, codexEvidence(result, request)), 'CALL_FAILED');
+});
+test('Existing hooks/MCP/policies/unknown auth settings block instead of being replaced', () => {
+  assert.equal(checkUserSettings({ security: { auth: { selectedType: 'oauth-personal' } } }), true);
+  for (const settings of [{ hooks: { SessionStart: [] } }, { mcpServers: { test: {} } },
+    { policyPaths: ['private'] }, { security: { auth: { selectedType: 'gemini-api-key' } } }]) {
+    assert.equal(checkUserSettings(settings), false);
+  }
+});
+test('Required flags and abnormal terminal exits fail closed', () => {
+  assert.deepEqual(requiredFlags('--sandbox --json', ['--json', '--cd']), ['--cd']);
+  assert.equal(terminalExitCode({ exitCode: 1 }, 'cli-exit'), 1);
+  assert.equal(terminalExitCode({ exitCode: 0 }, 'ctrl-q'), 1);
+  assert.equal(terminalExitCode({ exitCode: 0 }, 'cli-exit'), 0);
+});
+test('Gemini logging/system-prompt/environment overrides are blocked without exposing values', () => {
+  for (const key of ['GEMINI_WRITE_SYSTEM_MD', 'GEMINI_CLI_ACTIVITY_LOG_TARGET',
+    'GEMINI_TELEMETRY_LOG_PROMPTS', 'GEMINI_CLI_HOME', 'GOOGLE_APPLICATION_CREDENTIALS']) {
+    assert.equal(checkGeminiEnv({ [key]: 'dummy-value' }), false);
+  }
+  assert.equal(checkGeminiEnv({ GEMINI_CMD: 'C:\\safe\\gemini.cmd', PATH: 'normal' }), true);
+});
+test('Fixture snapshots detect new files, non-README changes, and deletions', async () => {
+  await mkdir(runtime, { recursive: true });
+  const folder = await mkdtemp(path.join(runtime, 'snapshot '));
+  await writeFile(path.join(folder, 'sample.txt'), 'before');
+  const before = await snapshot(folder);
+  await writeFile(path.join(folder, 'new.txt'), 'new');
+  assert.notEqual(await snapshot(folder), before);
+  await unlink(path.join(folder, 'new.txt'));
+  await writeFile(path.join(folder, 'sample.txt'), 'after');
+  assert.notEqual(await snapshot(folder), before);
+  await unlink(path.join(folder, 'sample.txt'));
+  assert.notEqual(await snapshot(folder), before);
+});
+test('CMD metacharacters cannot enter invocation arguments', () => {
+  for (const arg of ['test & whoami', '%USERNAME%', 'x|echo', 'x^y', 'x"y', 'x!y'])
+    assert.throws(() => cmdInvocation('C:\\safe\\codex.cmd', [arg]), /UNSAFE_CMD/u);
+});
+test('Capture timeout closes streams and returns failure for its owned direct child', async () => {
+  const start = Date.now();
+  const result = await capture(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeoutMs: 100 });
+  assert.equal(result.error, 'TIMEOUT');
+  assert.equal(result.cleanup, 'not-verified');
+  assert.ok(Date.now() - start < 2000);
+});
+test('Real Windows CMD wrapper receives Korean stdin and spaced path; no AI call', { skip: process.platform !== 'win32' }, async () => {
+  await mkdir(runtime, { recursive: true });
+  const folder = await mkdtemp(path.join(runtime, 'cmd 한글 '));
+  const script = path.join(folder, 'stdin.mjs');
+  const wrapper = path.join(folder, 'fixture.cmd');
+  await writeFile(script, "let input=''; process.stdin.setEncoding('utf8'); process.stdin.on('data', s => input+=s); process.stdin.on('end', () => console.log(JSON.stringify({input,args:process.argv.slice(2)})));", 'utf8');
+  await writeFile(wrapper, '@"' + process.execPath + '" "' + script + '" %*\r\n', 'utf8');
+  const invocation = cmdInvocation(wrapper, ['한글 공백']);
+  const result = await capture(invocation.file, invocation.args, { input: '한글 검토\n', timeoutMs: 8000 });
+  assert.equal(result.code, 0, result.error ?? result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { input: '한글 검토\n', args: ['한글 공백'] });
+});

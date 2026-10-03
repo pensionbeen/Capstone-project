@@ -2,7 +2,7 @@
 
 터미널 AI의 요구분석·기능 관리·실행·기록을 연결하고, Windows OS 파일 보호와 같은 네트워크의 기기 간 파일 전송을 제공하는 졸업작품의 개발계획이다.
 
-**작업 저장소는 `C:/Users/jbiho/dev/Capstone-project`다.** 문서 기준은 `docs/project-plan`의 `f8730ac`이며, 현재 T-001 준비는 `chore/t-001-environment`에서 진행한다. Git 원격 추적 이력에 문서 브랜치 push 기록이 확인됐으며 현재 세션의 실시간 원격 조회는 제한된다. 최신 커밋·push 상태는 STATUS를 따른다. 기능 구현·패키지 설치·시스템 보안 변경·main 병합은 아직 수행하지 않았다.
+**작업 저장소는 `C:/Users/jbiho/dev/Capstone-project`다.** T-001 조사·준비 뒤 `spike/x-001-ai-terminal`에서 AI 연결·자동 운영 실험을 진행한다. 선행 기준은 `616418e`이며 T-001 산출물 `d983633`까지 사용자 push 확인, 후속 이력의 원격 상태는 STATUS를 따른다. 분리된 실험 코드는 작성했지만 앱 기능·패키지 설치·OS 보안 변경·main 병합은 수행하지 않았다.
 
 ## 읽는 순서
 
@@ -13,6 +13,7 @@
 5. 필요할 때 [구조·기술 실험](docs/ARCHITECTURE.md), [AI 협업·모델·기록](docs/AI_WORKFLOW.md), [Git·개발·복구 규칙](docs/DEVELOPMENT_RULES.md)
 6. 개발 준비에는 [T-001 환경·CLI·버전 후보 결과](docs/ENVIRONMENT.md)
 7. [이번 실제 작업 기록](docs/work-log/2026-10-03.md)
+8. AI 자동 운영 실험은 [X-001 결과](docs/experiments/X-001.md) → [실행 방법](experiments/x-001-ai-terminal/README.md)
 
 AI 시작 지침은 [AGENTS.md](AGENTS.md), 독립 검토 지침은 [GEMINI.md](GEMINI.md)에 있다.
 

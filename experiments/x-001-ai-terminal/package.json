@@ -1,0 +1,24 @@
+{
+  "name": "capstone-x001-ai-terminal",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "X-001 Windows AI terminal experiment; not the application",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "os": [
+    "win32"
+  ],
+  "scripts": {
+    "test": "node --test lib.test.mjs review.test.mjs",
+    "ai:capabilities": "node ai-capabilities.mjs",
+    "ai:probe": "node ai-review.mjs --probe",
+    "preflight": "node preflight.mjs",
+    "smoke": "node pty-smoke.mjs",
+    "terminal": "node codex-terminal.mjs"
+  },
+  "dependencies": {
+    "node-pty": "1.1.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "message"
+  ],
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": [
+        "x001-probe"
+      ]
+    },
+    "message": {
+      "type": "string",
+      "enum": [
+        "한글 연결 확인"
+      ]
+    }
+  }
+}
