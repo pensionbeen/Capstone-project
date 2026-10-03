@@ -11,11 +11,12 @@
     "win32"
   ],
   "scripts": {
-    "test": "node --test lib.test.mjs review.test.mjs smoke.test.mjs",
+    "test": "node --test lib.test.mjs review.test.mjs smoke.test.mjs managed.test.mjs",
     "ai:capabilities": "node ai-capabilities.mjs",
     "ai:probe": "node ai-review.mjs --probe",
     "preflight": "node preflight.mjs",
     "smoke": "node pty-smoke.mjs",
+    "smoke:managed": "node pty-managed.mjs",
     "terminal": "node codex-terminal.mjs"
   },
   "dependencies": {
