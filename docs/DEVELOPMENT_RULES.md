@@ -18,25 +18,64 @@
 
 선행 병합을 기다릴 수 없으면 선행 작업 브랜치의 **명시한 커밋**에서 후속 브랜치를 만들고 의존 관계를 기록한다. 후속 PR은 우선 선행 브랜치를 기준으로 하여 차이를 작게 유지할 수 있다. 병합 순서는 선행 → 후속이다. 선행을 main에 반영한 뒤 후속 브랜치로 최신 main을 merge하고 다시 검증한다. 이미 공유한 후속 이력을 강제 rebase/push하지 않는다. PR 생성 자체는 필수 조직 절차가 아니라 검토·차이 보관 수단이다.
 
-### 원격 연결 실패와 이번 로컬 저장소
+### 기존 저장소와 현재 세션의 네트워크 제한
 
-2026-10-03 사용자 확인: 기존 로컬 저장소 없음. 대상 원격은 `https://github.com/pensionbeen/Capstone-project.git`. GitHub HTTPS 연결 실패로 clone을 완료하지 못했다.
+실제 작업 위치는 사용자가 지정한 `C:/Users/jbiho/dev/Capstone-project`다. origin은 `https://github.com/pensionbeen/Capstone-project.git`이다. 점검 당시 이 저장소에는 main이라는 초기 브랜치 이름과 원격 설정만 있었고 커밋·작업 파일·미커밋 변경은 없었다. 문서 초안을 만들었던 별도 로컬 폴더에서 검증한 커밋만 가져와 `docs/project-plan`을 만들었다. 기존 저장소를 다시 초기화하지 않았다.
 
-이번 작업 위치는 `C:/Users/jbiho/source/repos/Capstone-project`이고, 문서 보존을 위해 **원격 이력과 연결되지 않은 새 로컬 docs/project-plan 브랜치**를 초기화했다. 원격이 빈 저장소라는 뜻이 아니다. 기존 원격 README·AGENTS·GEMINI·코드·기본 브랜치는 아직 미조회다.
+현재 실행 계정은 저장소 소유자와 다른 CodexSandboxOffline이다. Git의 소유자 확인 오류는 정확한 대상에만 적용되는 `git -c safe.directory=C:/Users/jbiho/dev/Capstone-project …`로 처리했다. 전역 safe.directory·소유권·ACL·방화벽은 바꾸지 않았다. 일반 사용자 PowerShell에는 이 임시 옵션이 필요하지 않을 수 있다.
 
-연결 복구 시 순서:
+사용자는 별도 승인 실행에서 원격 조회 성공을 확인했다고 알려주었다. **이 세션에서는** GitHub 443 연결이 실패했고 TCP 소켓 접근 권한 오류를 확인했다. 세션 정책상 샌드박스 밖 실행 승인 요청(sandbox_approval)이 허용되지 않는다. 원격 조회 실패·일반 push 미실행·사용자 보고를 각각 기록한다. GitHub 플러그인은 HTTPS Git push의 필수 조건이 아니다.
 
-- 먼저 원격 HEAD·브랜치·관련 커밋을 읽는다. 동일 이름 원격 문서 브랜치가 있으면 내용을 확인한다.
-- 원격에 기존 이력이 있으면 별도 정상 checkout/worktree에서 원격의 실제 기준 브랜치를 기준으로 작업한다. 그곳의 AGENTS·README·기획·코드를 읽고 이번 문서 차이를 검토하여 적용한다.
-- 이번 독립 초기 커밋을 main에 강제로 붙이거나 `--allow-unrelated-histories`로 혼합하지 않는다. 기존 문서를 보존하며 필요한 문서 변경만 적용·커밋한다.
-- 원격이 정말 비었다고 확인한 경우에만 초기 문서 브랜치의 첫 푸시를 진행할 수 있다. main 생성/병합은 이번 범위가 아니다.
-- 확인할 수 없으면 로컬 결과를 보존하고 ‘원격 이력 미확인·푸시 대기’로 보고한다. 연결 오류를 인증 실패나 원격 공백으로 바꾸어 표현하지 않는다.
+연결 가능한 일반 PowerShell에서의 순서:
+
+1. 아래 명령으로 같은 경로·원격·브랜치·변경 상태·커밋을 확인한다.
+2. 원격 조회 성공 후 문서 브랜치만 일반 push한다. 원격에 같은 이름의 다른 이력이 있으면 Git이 거절할 수 있으므로 중단하고 비교한다. 강제 push·초기화·main 병합으로 해결하지 않는다.
+3. push 성공 후 원격 문서 브랜치 해시와 로컬 해시가 같은지 확인한다. 원격 조회만 성공한 것을 push 성공으로 보고하지 않는다.
+4. 원격에 기존 코드/규칙이 있으면 후속 개발 전에 읽고 현재 계획과 차이를 기록한다. 독립 문서 초기 커밋을 기존 main에 강제로 합치거나 `--allow-unrelated-histories`로 섞지 않는다.
+
+다음은 **사용자가 VS Code의 일반 PowerShell에서 실행할 복구 명령**이며 이 세션에서 성공했다고 확인한 명령이 아니다.
+
+```powershell
+Set-Location -LiteralPath 'C:\Users\jbiho\dev\Capstone-project'
+git remote -v
+git status --short --branch
+git log -1 --oneline
+if ((git remote get-url origin) -ne 'https://github.com/pensionbeen/Capstone-project.git') {
+    throw '대상 원격 주소가 다릅니다.'
+}
+if ((git branch --show-current) -ne 'docs/project-plan') {
+    throw '문서 브랜치가 아닙니다.'
+}
+$planChanges = git status --porcelain
+if ($LASTEXITCODE -ne 0 -or $planChanges) {
+    throw 'Git 상태 조회 실패 또는 미커밋 변경이 있습니다. 먼저 확인하세요.'
+}
+git ls-remote --symref origin HEAD refs/heads/docs/project-plan
+if ($LASTEXITCODE -ne 0) { throw '원격 조회 실패. push를 중단합니다.' }
+git push -u origin docs/project-plan:refs/heads/docs/project-plan
+if ($LASTEXITCODE -ne 0) { throw 'push 실패. 강제 push하지 말고 오류를 확인하세요.' }
+$planLocal = git rev-parse docs/project-plan
+$planRemote = git ls-remote origin refs/heads/docs/project-plan
+if ($LASTEXITCODE -ne 0 -or -not $planRemote) {
+    throw 'push 후 원격 해시 확인 실패.'
+}
+if (($planRemote -split '\s+')[0] -ne $planLocal) {
+    throw '로컬과 원격 문서 브랜치 해시가 다릅니다.'
+}
+Write-Output "문서 브랜치 push 및 원격 해시 일치 확인: $planLocal"
+```
+
+이전 `C:/Users/jbiho/source/repos/Capstone-project`는 보존한 초안 위치다. 이후 실제 작업은 dev 경로에서만 이어간다. 현재 커밋·동기화 결과는 STATUS와 날짜별 기록이 기준이다.
 
 ### 커밋할 파일
 
 정확한 파일 목록을 검토하고 `git add -- 경로1 경로2`처럼 이번 작업만 스테이징한다. `git diff --cached --name-only`, `git diff --cached --check`, 전체 staged diff를 확인한다.
 
 제외 대상: API 키·비밀번호·인증 파일/링크·실행 DB와 WAL/SHM·사용자 프로젝트 원문 로그·빌드 결과·의존성 폴더·개인 환경 설정. 이후 구현 시 해당 경로의 ignore 규칙을 추가하고 포함 여부를 실제 검사한다. 단순히 .gitignore가 있다는 것으로 비밀 검사를 대신하지 않는다.
+
+## 한국어 문서와 PowerShell 인코딩
+
+Markdown은 UTF-8로 저장한다. Windows PowerShell에서 읽을 때는 `Get-Content -Raw -Encoding UTF8 파일경로`처럼 인코딩을 명시한다. 기본 인코딩으로 잘못 읽은 깨진 문자열을 원본에 다시 저장하지 않는다. 표시가 깨지면 먼저 UTF-8 바이트 검사와 명시적 UTF-8 재조회를 하고, 파일 손상과 출력 해석 문제를 구분한다. 이번 11개 문서는 엄격한 UTF-8 해석·대체 문자 검사·한글 재조회가 정상이며 인코딩 변환은 필요하지 않았다.
 
 ## 코드·API·데이터 변경
 
