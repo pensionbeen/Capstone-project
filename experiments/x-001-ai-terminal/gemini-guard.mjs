@@ -5,7 +5,7 @@ import { readFile, readdir, access } from 'node:fs/promises';
 const SAFE_USER_LEAVES = new Set([
   'security.auth.selectedType', 'general.previewFeatures', 'model.name',
   'ui.theme', 'ui.hideTips', 'ui.hideBanner', 'ui.showMemoryUsage',
-  'ui.useFullWidth', 'privacy.usageStatisticsEnabled',
+  'ui.useFullWidth', 'privacy.usageStatisticsEnabled', 'ide.hasSeenNudge',
 ]);
 export function checkUserSettings(settings, prefix = '') {
   if (!settings || Array.isArray(settings) || typeof settings !== 'object') return false;
@@ -16,6 +16,7 @@ export function checkUserSettings(settings, prefix = '') {
       return checkUserSettings(value, leaf);
     }
     return SAFE_USER_LEAVES.has(leaf) &&
+      (leaf !== 'ide.hasSeenNudge' || typeof value === 'boolean') &&
       (leaf !== 'security.auth.selectedType' || value === 'oauth-personal');
   });
 }
@@ -40,6 +41,10 @@ export async function guardGemini(cwd) {
   // Matches the reviewed 0.62.0 Windows loader, not a mutable ProgramData override.
   const system = 'C:\\ProgramData\\gemini-cli';
   const user = await optionalJson(path.join(geminiHome, 'settings.json'));
+  // This preference belongs only to Gemini CLI. It says nothing about the
+  // separately installed Antigravity CLI or whether a service login succeeds.
+  if (user.security?.auth?.selectedType && user.security.auth.selectedType !== 'oauth-personal')
+    throw new Error('GEMINI_CLI_AUTH_PREFERENCE_REQUIRES_REVIEW_NOT_ANTIGRAVITY_AUTH');
   if (!checkUserSettings(user)) throw new Error('USER_SETTINGS_REQUIRE_REVIEW');
   if (user.security?.auth?.selectedType !== 'oauth-personal')
     throw new Error('GEMINI_LOGIN_METHOD_UNCONFIRMED_NO_API_FALLBACK');

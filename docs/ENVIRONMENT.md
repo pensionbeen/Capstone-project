@@ -119,7 +119,7 @@ node-pty 1.1.0의 설치 스크립트는 준비된 바이너리를 시도하고 
 
 ## 확인 기록과 남은 조건
 
-후속 X-001에서 사용자의 `Logged in using ChatGPT` 결과를 받았다. 이는 사용자 터미널의 ChatGPT 로그인 방식 증거이며 현재 도구 세션의 서비스 응답/모델 확인과 구분한다. 자동 호출·현재 접근 제한의 최신 결과는 [X-001 보고](experiments/X-001.md)를 따른다. 아래 ENV 표는 T-001 완료 시점 기록이다.
+후속 X-001에서 17:39 KST 사용자 실행 결과의 Codex ChatGPT 인증·Sol/Astra/Max/Ultra 목록·실제 응답을 확인했다. JSON 결과의 실제 실행 모델/추론은 미확인이다. 사용자가 추가한 Antigravity CLI 1.1.10 배너는 Google AI Pro 로그인·Gemini 3.1 Pro (High) 선택 표시이며 별도 Gemini CLI 0.62.0과 구분한다. 현재 도구 세션의 cmd/agy.exe 접근 거부는 계속된다. 최신 증거·한계는 [X-001 보고](experiments/X-001.md)를 따른다. 아래 ENV 표는 T-001 완료 시점 기록이다.
 
 | 검사 | 실제 결과 |
 |---|---|

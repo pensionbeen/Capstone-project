@@ -4,11 +4,11 @@ import { readFile, writeFile, mkdir, open, unlink } from 'node:fs/promises';
 import { stripVTControlCharacters } from 'node:util';
 import { authSummary, capture, cmdInvocation, codexPath, fileState, report, runtime,
   workspace, requiredFlags } from './lib.mjs';
-import { chooseModel, parseCatalog, parsePacket, validatePacket, promptFor, codexEvidence, geminiEvidence, verdict } from './review-core.mjs';
+import { chooseModel, checkCodexEnv, parseCatalog, parsePacket, validatePacket, promptFor, codexTextEvidence, geminiEvidence, verdict } from './review-core.mjs';
 import { guardGemini, geminiProjectSettings } from './gemini-guard.mjs';
 import { snapshot } from './snapshot.mjs';
 
-const baseCommit = '616418edbcb9009dde2255896bd05752e454b6d3';
+const baseCommit = '2ad23ce5214f056e445d778df22e7bea6699039d';
 const probe = {
   taskId: 'X-001', baseCommit, kind: 'test', parallelReviewUseful: false, risks: [],
   scope: '가짜 나이 판정 코드의 읽기 전용 검토', verification: '앱 검증 미실행; 경계값 18 확인 필요',
@@ -16,9 +16,12 @@ const probe = {
   content: 'Requirement: age >= 18 is adult. function isAdult(age) { return age > 18; }',
 };
 const argv = process.argv.slice(2);
-if (!(argv.length === 1 && argv[0] === '--probe') &&
-    !(argv.length === 2 && argv[0] === '--packet')) {
-  console.error('Usage: node ai-review.mjs --probe | --packet path-to-reviewed-packet.json');
+let provider = 'both';
+if (argv.at(-2) === '--provider') provider = argv.splice(-2)[1];
+if (!['both', 'codex', 'gemini'].includes(provider) ||
+    (!(argv.length === 1 && argv[0] === '--probe') &&
+    !(argv.length === 2 && argv[0] === '--packet'))) {
+  console.error('Usage: node ai-review.mjs --probe | --packet path.json [--provider codex|gemini|both]');
   process.exitCode = 2;
 } else {
   await mkdir(runtime, { recursive: true });
@@ -34,15 +37,22 @@ if (!(argv.length === 1 && argv[0] === '--probe') &&
     if (process.platform !== 'win32') throw new Error('WINDOWS_REQUIRED');
     const cwd = await workspace();
     const prompt = promptFor(packet);
+    const checkedSnapshot = async () => {
+      try { return await snapshot(cwd); }
+      catch {
+        leaveLock = true;
+        throw new Error('FIXTURE_SNAPSHOT_UNCONFIRMED_STOP_ALL_CALLS');
+      }
+    };
     const invoke = async (file, args, options = {}) => {
-      const before = await snapshot(cwd);
+      const before = await checkedSnapshot();
       const invocation = cmdInvocation(file, args);
       const result = await capture(invocation.file, invocation.args, { cwd, timeoutMs: 15000, ...options });
       if (['TIMEOUT', 'OUTPUT_LIMIT'].includes(result.error)) {
         leaveLock = true;
         throw new Error('OWNED_DESCENDANT_CLEANUP_UNCONFIRMED_STOP_ALL_CALLS');
       }
-      if (await snapshot(cwd) !== before) {
+      if (await checkedSnapshot() !== before) {
         leaveLock = true;
         throw new Error('FIXTURE_CHANGED_STOP_ALL_CALLS');
       }
@@ -59,12 +69,13 @@ if (!(argv.length === 1 && argv[0] === '--probe') &&
       if (actualVersion !== expectedVersion) throw new Error(provider + '_VERSION_REQUIRES_REVIEW');
       return successful(await invoke(file, ['--help']));
     };
-    try {
+    if (provider !== 'gemini') try {
+      if (!checkCodexEnv(process.env)) throw new Error('CODEX_AUTH_OR_ENDPOINT_ENV_REQUIRES_REVIEW');
       const file = codexPath();
       const help = await inspect('CODEX', file, '0.160.0');
       const execHelp = successful(await invoke(file, ['exec', '--help']));
       if (requiredFlags(help.stdout + help.stderr + execHelp.stdout + execHelp.stderr,
-        ['--model', '--config', '--sandbox', '--ask-for-approval', '--json', '--ephemeral',
+        ['--model', '--config', '--sandbox', '--ask-for-approval', '--color', '--ephemeral',
           '--ignore-user-config', '--skip-git-repo-check', '--cd']).length)
         throw new Error('CODEX_REQUIRED_FLAGS_UNCONFIRMED');
       const auth = authSummary(successful(await invoke(file, ['login', 'status'])));
@@ -76,9 +87,9 @@ if (!(argv.length === 1 && argv[0] === '--probe') &&
       const args = ['--ask-for-approval', 'never', 'exec', '--ignore-user-config',
         '--sandbox', 'read-only', '--model', requested.model,
         '--config', 'model_reasoning_effort=' + requested.effort,
-        '--ephemeral', '--json', '--skip-git-repo-check', '--cd', cwd, '-'];
+        '--ephemeral', '--color', 'never', '--skip-git-repo-check', '--cd', cwd, '-'];
       const result = await invoke(file, args, { input: prompt, timeoutMs: 180000, maxBytes: 256000 });
-      const evidence = codexEvidence(result, requested);
+      const evidence = codexTextEvidence(result, requested, cwd);
       results.push({ provider: 'Codex', requested, status: verdict(result, evidence),
         evidence: { ...evidence, response: stripVTControlCharacters(evidence.response).slice(0, 6000) },
         exitCode: result.code, error: result.error,
@@ -87,7 +98,7 @@ if (!(argv.length === 1 && argv[0] === '--probe') &&
       results.push({ provider: 'Codex', status: 'BLOCKED', reason: error.message });
       if (leaveLock) throw error;
     }
-    try {
+    if (provider !== 'codex') try {
       const file = process.env.GEMINI_CMD || path.join(process.env.APPDATA || '', 'npm', 'gemini.cmd');
       if (await fileState(file) !== 'accessible') throw new Error('GEMINI_CMD_INACCESSIBLE');
       const guard = await guardGemini(cwd);
@@ -122,11 +133,15 @@ if (!(argv.length === 1 && argv[0] === '--probe') &&
   } finally {
     if (lock) { await lock.close(); if (!leaveLock) await unlink(lockPath); }
   }
-  const passed = results.length === 2 && results.every((row) => row.status === 'RESPONSE_AND_MODEL_OBSERVED');
+  const expected = provider === 'both' ? 2 : 1;
+  const passed = results.length === expected && results.every((row) => row.status === 'RESPONSE_AND_MODEL_OBSERVED');
   await report('ai-review', {
     status: passed ? 'PROBE_OBSERVED_REQUIRES_LEAD_REVIEW' : 'BLOCKED_OR_PARTIAL',
     taskId: packet.taskId, baseCommit: packet.baseCommit, packetSha256,
-    scope: packet.scope, verification: packet.verification, results,
+    scope: packet.scope, verification: packet.verification, requestedProviders: provider, results,
+    responseObservedProviders: results.filter((row) => row.evidence?.completed &&
+      row.evidence.response?.trimStart().startsWith('X001_REVIEW')).map((row) => row.provider),
+    bothProviderProbesObserved: provider === 'both' && passed,
     currentConversationModelChanged: false, packagesInstalled: false,
     rawTranscriptSavedByRunner: false,
     cliOwnHistory: 'Codex ephemeral requested; Gemini may retain its own session history outside this report.',

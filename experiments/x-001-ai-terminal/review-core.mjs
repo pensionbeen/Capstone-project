@@ -1,5 +1,14 @@
+import { stripVTControlCharacters } from 'node:util';
+
 export const IMPORTANT = new Set(['architecture', 'os-security', 'hard-debug', 'final-review']);
 const LEVELS = ['ultra', 'max', 'xhigh', 'high', 'medium', 'low'];
+
+export function checkCodexEnv(env) {
+  // login status ignores CODEX_API_KEY in 0.160.0; exec can consume it.
+  // Inspect presence only and do not silently switch authentication routes.
+  const overrides = new Set(['CODEX_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CODEX_CHATGPT_BASE_URL']);
+  return !Object.keys(env).some((name) => overrides.has(name.toUpperCase()) && Boolean(env[name]));
+}
 
 export function chooseModel(packet, models) {
   if (!packet || !['implementation', 'test', 'fix', 'review', ...IMPORTANT].includes(packet.kind))
@@ -79,11 +88,46 @@ export function codexEvidence(result, requested) {
   const failed = events.some((event) => ['error', 'turn.failed'].includes(event.type));
   const usedTools = events.some((event) => event.item &&
     !['agent_message', 'reasoning'].includes(event.item.type));
-  return { response, completed, failed, usedTools,
+  return { response, completed, failed, usedTools, toolObservation: 'EMITTED_ITEMS_ONLY_NOT_PROOF_OF_NO_TOOLS',
     requestedModel: requested.model, requestedReasoning: requested.effort,
     cliReportedModel: model, cliReportedReasoning: effort,
     modelEvidence: model && effort ? 'CLI_HEADER' : 'UNCONFIRMED',
     exactModelConfirmed: model === requested.model && effort === requested.effort };
+}
+
+export function codexTextEvidence(result, requested, cwd) {
+  const stderr = stripVTControlCharacters(result.stderr);
+  // Only the first CLI-owned header counts; prompt/response text follows it.
+  const match = stderr.match(/^OpenAI Codex v0\.160\.0\r?\n--------\r?\n([\s\S]{1,4096}?)\r?\n--------\r?\nuser\r?\n/mu);
+  const fields = new Map();
+  let duplicate = false;
+  if (match && match.index < 4096 && !/(?:^|\n)user\r?\n/u.test(stderr.slice(0, match.index))) {
+    for (const line of match[1].split(/\r?\n/u)) {
+      const parts = line.match(/^([a-z ]+): (.*)$/u);
+      if (!parts) continue;
+      if (fields.has(parts[1])) duplicate = true;
+      fields.set(parts[1], parts[2]);
+    }
+  }
+  if (duplicate) fields.clear();
+  const model = fields.get('model') ?? null;
+  const effort = fields.get('reasoning effort') ?? null;
+  const rerouted = /^model rerouted:/mu.test(stderr);
+  const response = stripVTControlCharacters(result.stdout).trim();
+  return {
+    response, completed: result.code === 0 && !result.error && response.length > 0,
+    failed: Boolean(result.error) || result.code !== 0,
+    // Human/JSON output both omit some tool events: absence is not proof.
+    usedTools: /^(?:exec\r?$|mcp:|web search:|apply patch\r?$|collab:|hook:)/mu.test(stderr),
+    toolObservation: 'RENDERED_EVENTS_ONLY_NOT_PROOF_OF_NO_TOOLS',
+    requestedModel: requested.model, requestedReasoning: requested.effort,
+    cliReportedModel: model, cliReportedReasoning: effort,
+    modelEvidence: model && effort ? 'CLI_RESOLVED_CONFIG' : 'UNCONFIRMED',
+    remoteModelAttestation: 'UNCONFIRMED', rerouted,
+    exactModelConfirmed: model === requested.model && effort === requested.effort && !rerouted,
+    readOnlyConfigConfirmed: fields.get('provider') === 'openai' && fields.get('approval') === 'never' &&
+      fields.get('sandbox') === 'read-only' && fields.get('workdir') === cwd,
+  };
 }
 
 export function geminiEvidence(result, requestedModel) {
@@ -108,7 +152,9 @@ export function geminiEvidence(result, requestedModel) {
 export function verdict(result, evidence) {
   if (result.error || result.code !== 0 || evidence.failed || !evidence.completed) return 'CALL_FAILED';
   if (evidence.usedTools) return 'UNEXPECTED_TOOL_ACTIVITY';
-  if (!evidence.exactModelConfirmed) return 'MODEL_UNCONFIRMED_OR_CHANGED';
-  if (!evidence.response.includes('X001_REVIEW')) return 'RESPONSE_FORMAT_UNCONFIRMED';
+  if (!evidence.response.trimStart().startsWith('X001_REVIEW')) return 'RESPONSE_FORMAT_UNCONFIRMED';
+  if (evidence.readOnlyConfigConfirmed === false) return 'RESPONSE_OBSERVED_READONLY_CONFIG_UNCONFIRMED';
+  if (!evidence.exactModelConfirmed) return evidence.modelEvidence === 'UNCONFIRMED'
+    ? 'RESPONSE_OBSERVED_MODEL_UNCONFIRMED' : 'RESPONSE_OBSERVED_MODEL_MISMATCH';
   return 'RESPONSE_AND_MODEL_OBSERVED';
 }
