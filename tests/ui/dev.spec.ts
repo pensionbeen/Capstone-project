@@ -16,6 +16,10 @@ test('개발 모드에서도 스타일과 StrictMode 모달이 유지된다', as
   });
   try {
     const page = await app.firstWindow();
+    const consoleErrors: string[] = [];
+    page.on('console', (message) => {
+      if (message.type() === 'error') consoleErrors.push(message.text());
+    });
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
     await expect(page.locator('.app-shell')).toHaveCSS('display', 'grid');
     await expect(page.getByRole('button', { name: '프로젝트 폴더 선택', exact: true })).toHaveCSS(
@@ -26,6 +30,16 @@ test('개발 모드에서도 스타일과 StrictMode 모달이 유지된다', as
     await expect(page.getByRole('dialog')).toBeVisible();
     await page.getByRole('button', { name: '프로젝트로 돌아가기' }).click();
     await expect(page.getByRole('dialog')).toHaveCount(0);
+    await app.evaluate(({ dialog }, path) => {
+      dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [path] });
+    }, resolve('.runtime'));
+    await page.getByRole('button', { name: '프로젝트 폴더 선택', exact: true }).click();
+    await page.getByRole('button', { name: '이 프로젝트로 시작' }).click();
+    await page.getByRole('button', { name: 'Codex 대화 열기', exact: true }).click();
+    await expect(page.locator('.xterm-screen')).toBeVisible();
+    await expect(page.locator('.xterm-rows')).toHaveCSS('white-space', 'pre');
+    await page.getByRole('button', { name: '닫기', exact: true }).click();
+    expect(consoleErrors).toEqual([]);
   } finally {
     await app.close();
     await server.close();

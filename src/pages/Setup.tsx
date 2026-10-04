@@ -27,7 +27,12 @@ export function ProjectPage({
     try {
       const result = await window.desktop.selectProjectFolder();
       if (result.status === 'selected')
-        onSelect({ name: result.name, path: result.path, sample: false });
+        onSelect({
+          name: result.name,
+          path: result.path,
+          sample: false,
+          desktopId: result.projectId,
+        });
       else if (result.status === 'error') setMessage(result.message);
       else setMessage('폴더 선택을 취소했어요. 준비되면 다시 선택해 주세요.');
     } catch {
@@ -138,6 +143,9 @@ export function ConnectionPage({
   onProtection,
   onNext,
   onBack,
+  onOpenAI,
+  actualProject,
+  connectionSummary,
 }: {
   providers: Provider[];
   onToggleProvider: (value: Provider) => void;
@@ -145,6 +153,9 @@ export function ConnectionPage({
   onProtection: (draft: ProtectionDraft) => void;
   onNext: () => void;
   onBack: () => void;
+  onOpenAI: () => void;
+  actualProject: boolean;
+  connectionSummary: string;
 }) {
   return (
     <section className="setup-page">
@@ -185,11 +196,26 @@ export function ConnectionPage({
       </fieldset>
       <div className="connection-status" aria-live="polite">
         <span className="status-dot" />
-        <span>
-          {providers.length ? `${providers.join(' · ')} 연결 전` : 'AI를 1개 이상 선택해 주세요'}
-        </span>
-        <span className="muted">실제 계정 연결은 준비 중이에요</span>
+        <span>{providers.length ? connectionSummary : 'AI를 1개 이상 선택해 주세요'}</span>
+        <span className="muted">Codex부터 실제 대화를 연결할 수 있어요</span>
       </div>
+      {providers.includes('Codex') && (
+        <div className="connection-action">
+          <p>
+            {actualProject
+              ? '설치·로그인을 확인하고 읽기 전용 대화를 시작해요.'
+              : '실제 Codex 대화는 프로젝트 폴더를 선택한 뒤 사용할 수 있어요.'}
+          </p>
+          <Button variant="secondary" onClick={onOpenAI} disabled={!actualProject}>
+            Codex 대화 열기
+          </Button>
+        </div>
+      )}
+      {providers.includes('Gemini') && (
+        <p className="field-hint">
+          Gemini 선택은 유지되며, 실제 연결과 역할 분담은 후속 개발이에요.
+        </p>
+      )}
       <div className="section-block protection-summary">
         <div className="section-heading">
           <div>
@@ -219,8 +245,8 @@ export function ConnectionPage({
         </details>
       </div>
       <Notice>
-        지금은 화면 미리보기 단계예요. 예시 대화로 진행하며, 실제 AI 연결이나 파일 접근 차단은
-        실행하지 않아요.
+        아래 요구분석은 예시 흐름이에요. 실제 Codex 대화와 별도로 진행하며, 파일 접근 차단은 아직
+        적용되지 않아요.
       </Notice>
       <div className="step-footer">
         <Button variant="ghost" onClick={onBack}>

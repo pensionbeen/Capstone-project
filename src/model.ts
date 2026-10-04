@@ -4,6 +4,7 @@ export type Provider = 'Codex' | 'Gemini';
 export type EventKind = 'feature' | 'settings' | 'verification';
 
 export interface Project {
+  desktopId?: string;
   name: string;
   path: string;
   sample: boolean;

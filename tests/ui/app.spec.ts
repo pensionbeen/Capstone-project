@@ -153,7 +153,18 @@ test('renderer는 Node 권한 없이 제한된 폴더 선택 API만 가진다', 
   expect(result).toEqual({
     require: 'undefined',
     process: 'undefined',
-    bridge: ['selectProjectFolder'],
+    bridge: [
+      'selectProjectFolder',
+      'inspectAI',
+      'readAIStatus',
+      'reconnectAI',
+      'listProjects',
+      'sendAIPrompt',
+      'readAISession',
+      'resizeAISession',
+      'stopAISession',
+      'resetAISession',
+    ],
   });
   const preferences = await app.evaluate(({ BrowserWindow }) => {
     const preferences = BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences();
