@@ -854,16 +854,20 @@ h1 {
   font-size: 11px;
   color: var(--muted);
 }
-.radio-mark {
+.provider-check {
   width: 16px;
   height: 16px;
   border: 1px solid #d7dde7;
-  border-radius: 50%;
+  border-radius: 4px;
   margin-left: auto;
   flex-shrink: 0;
+  display: grid;
+  place-items: center;
 }
-.selected .radio-mark {
-  border: 5px solid var(--accent);
+.selected .provider-check {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
 }
 .connection-status {
   display: flex;

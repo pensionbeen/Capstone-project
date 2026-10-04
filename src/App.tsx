@@ -51,7 +51,7 @@ export default function App() {
   const [step, setStep] = useState<Step>(0);
   const [inWorkspace, setInWorkspace] = useState(false);
   const [view, setView] = useState<View>('overview');
-  const [provider, setProvider] = useState<Provider>('Codex');
+  const [providers, setProviders] = useState<Provider[]>(['Codex']);
   const [protection, setProtection] = useState(initialProtection);
   const [analysis, setAnalysis] = useState(emptyAnalysis);
   const [features, setFeatures] = useState<Feature[]>([]);
@@ -98,7 +98,7 @@ export default function App() {
     setRecords([]);
     setActivities([]);
     setProtection(initialProtection);
-    setProvider('Codex');
+    setProviders(['Codex']);
     setStep(0);
     setInWorkspace(false);
     setView('overview');
@@ -224,7 +224,7 @@ export default function App() {
             </nav>
             <div className="sidebar-connection">
               <span className="status-dot" />
-              <span>{provider} 연결 전</span>
+              <span>{providers.join(' · ')} 연결 전</span>
             </div>
           </>
         ) : (
@@ -350,8 +350,14 @@ export default function App() {
             )}
             {!inWorkspace && step === 1 && (
               <ConnectionPage
-                provider={provider}
-                onProvider={setProvider}
+                providers={providers}
+                onToggleProvider={(provider) => {
+                  setProviders((selected) =>
+                    selected.includes(provider)
+                      ? selected.filter((item) => item !== provider)
+                      : [...selected, provider],
+                  );
+                }}
                 protection={protection}
                 onProtection={(draft) => {
                   setProtection(draft);
@@ -363,10 +369,11 @@ export default function App() {
                 }}
                 onBack={() => setStep(0)}
                 onNext={() => {
+                  if (providers.length === 0) return;
                   addActivity(
                     'settings',
                     'AI 도구 선택',
-                    `${provider}를 선택했어요. 실제 연결은 아직 하지 않았어요.`,
+                    `선택한 AI: ${providers.join(', ')}. 실제 연결은 아직 하지 않았어요.`,
                   );
                   setStep(2);
                 }}
@@ -429,7 +436,7 @@ export default function App() {
             {inWorkspace && view === 'protection' && (
               <ProtectionPage
                 draft={protection}
-                provider={provider}
+                providers={providers}
                 onSave={(draft) => {
                   setProtection(draft);
                   addActivity(

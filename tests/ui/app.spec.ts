@@ -59,7 +59,26 @@ test('5단계 흐름과 보조 메뉴를 실제 Electron에서 사용할 수 있
   await page.getByRole('button', { name: '예시 열기', exact: true }).click();
   await page.getByRole('button', { name: '이 프로젝트로 시작' }).click();
   await expect(page.getByText('Codex 연결 전', { exact: true })).toBeVisible();
+  const codex = page.getByRole('checkbox', { name: 'Codex', exact: true });
+  const gemini = page.getByRole('checkbox', { name: 'Gemini', exact: true });
+  await expect(codex).toBeChecked();
+  await gemini.check();
+  await expect(codex).toBeChecked();
+  await expect(gemini).toBeChecked();
+  await codex.uncheck();
+  await expect(gemini).toBeChecked();
+  await gemini.uncheck();
+  await expect(page.getByText('AI를 1개 이상 선택해 주세요')).toBeVisible();
+  await expect(page.getByRole('button', { name: '예시로 요구분석 시작' })).toBeDisabled();
+  await codex.focus();
+  await codex.press('Space');
+  await gemini.check();
+  await expect(page.getByText('Codex · Gemini 연결 전', { exact: true })).toBeVisible();
   await snapshot('02-connect');
+  await page.getByRole('button', { name: '예시로 요구분석 시작' }).click();
+  await page.getByRole('button', { name: 'AI 연결·보호 설정', exact: true }).click();
+  await expect(codex).toBeChecked();
+  await expect(gemini).toBeChecked();
   await page.getByRole('button', { name: '예시로 요구분석 시작' }).click();
   await expect(page.getByRole('button', { name: '요구분석 시작', exact: true })).toBeDisabled();
   await snapshot('03-analysis');
@@ -70,6 +89,7 @@ test('5단계 흐름과 보조 메뉴를 실제 Electron에서 사용할 수 있
   await page.getByRole('button', { name: '기능 초안 보기' }).click();
   await snapshot('04-confirm');
   await page.getByRole('button', { name: '기능 4개 확정하고 시작' }).click();
+  await expect(page.locator('.sidebar-connection')).toHaveText('Codex · Gemini 연결 전');
   await expect(
     page.getByRole('table', { name: '프로젝트 기능 목록' }).getByRole('row'),
   ).toHaveCount(5);
@@ -86,6 +106,15 @@ test('5단계 흐름과 보조 메뉴를 실제 Electron에서 사용할 수 있
   ]) {
     await page.getByRole('button', { name: menu, exact: true }).click();
     await expect(page.getByRole('heading', { level: 1 })).toHaveText(title);
+    if (menu === '보호 정책') {
+      await page.getByText('적용 대상과 상태 보기', { exact: true }).click();
+      await expect(page.getByText('Codex · Gemini · 연결 전', { exact: true })).toBeVisible();
+    }
+    if (menu === '실행 이력') {
+      await expect(
+        page.getByText('선택한 AI: Codex, Gemini. 실제 연결은 아직 하지 않았어요.').first(),
+      ).toBeVisible();
+    }
     await snapshot(screenshot);
   }
 });

@@ -276,11 +276,11 @@ export function VerificationPage({
 export function ProtectionPage({
   draft,
   onSave,
-  provider,
+  providers,
 }: {
   draft: ProtectionDraft;
   onSave: (value: ProtectionDraft) => void;
-  provider: Provider;
+  providers: Provider[];
 }) {
   return (
     <section className="workspace-page narrow-page">
@@ -313,7 +313,7 @@ export function ProtectionPage({
         <dl className="definition-list">
           <div>
             <dt>선택한 AI</dt>
-            <dd>{provider} · 연결 전</dd>
+            <dd>{providers.join(' · ')} · 연결 전</dd>
           </div>
           <div>
             <dt>보호 실행</dt>

@@ -132,15 +132,15 @@ export function ProjectPage({
 }
 
 export function ConnectionPage({
-  provider,
-  onProvider,
+  providers,
+  onToggleProvider,
   protection,
   onProtection,
   onNext,
   onBack,
 }: {
-  provider: Provider;
-  onProvider: (value: Provider) => void;
+  providers: Provider[];
+  onToggleProvider: (value: Provider) => void;
   protection: ProtectionDraft;
   onProtection: (draft: ProtectionDraft) => void;
   onNext: () => void;
@@ -151,37 +151,43 @@ export function ConnectionPage({
       <PageHeading
         eyebrow="02 / CONNECT"
         title="함께할 AI를 선택해 주세요"
-        description="사용할 AI와 보호할 파일을 정하고, 프로젝트를 구체화해요."
+        description="함께 사용할 AI를 여러 개 선택할 수 있어요. 보호할 파일도 미리 정해 주세요."
       />
       <fieldset className="provider-fieldset">
-        <legend className="section-label">AI 도구</legend>
+        <legend className="section-label">AI 도구 · 여러 개 선택 가능</legend>
         <div className="provider-options">
           {(['Codex', 'Gemini'] as const).map((item) => (
-            <label className={`provider-option ${provider === item ? 'selected' : ''}`} key={item}>
+            <label
+              className={`provider-option ${providers.includes(item) ? 'selected' : ''}`}
+              key={item}
+            >
               <input
-                type="radio"
-                name="provider"
+                type="checkbox"
+                name="providers"
                 value={item}
-                checked={provider === item}
-                onChange={() => onProvider(item)}
+                aria-label={item}
+                checked={providers.includes(item)}
+                onChange={() => onToggleProvider(item)}
               />
               <span className="provider-symbol">
                 <Icon name={item === 'Codex' ? 'code' : 'sparkle'} size={25} />
               </span>
               <span className="provider-copy">
                 <strong>{item}</strong>
-                <span>
-                  {item === 'Codex' ? '코드 작업을 함께하는 AI' : '아이디어를 함께 정리하는 AI'}
-                </span>
+                <span>{item} CLI · 터미널 AI</span>
               </span>
-              <span className="radio-mark" />
+              <span className="provider-check" aria-hidden="true">
+                {providers.includes(item) && <Icon name="check" size={12} />}
+              </span>
             </label>
           ))}
         </div>
       </fieldset>
-      <div className="connection-status">
+      <div className="connection-status" aria-live="polite">
         <span className="status-dot" />
-        <span>{provider} 연결 전</span>
+        <span>
+          {providers.length ? `${providers.join(' · ')} 연결 전` : 'AI를 1개 이상 선택해 주세요'}
+        </span>
         <span className="muted">실제 계정 연결은 준비 중이에요</span>
       </div>
       <div className="section-block protection-summary">
@@ -220,7 +226,7 @@ export function ConnectionPage({
         <Button variant="ghost" onClick={onBack}>
           이전 단계
         </Button>
-        <Button onClick={onNext} icon="arrow">
+        <Button onClick={onNext} icon="arrow" disabled={providers.length === 0}>
           예시로 요구분석 시작
         </Button>
       </div>
