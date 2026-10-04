@@ -7,6 +7,11 @@ const desktop: DesktopBridge = {
   readAIStatus: (projectId) => ipcRenderer.invoke('ai:status', projectId),
   reconnectAI: () => ipcRenderer.invoke('ai:reconnect'),
   listProjects: () => ipcRenderer.invoke('project:list'),
+  activateProject: (id) => ipcRenderer.invoke('project:activate', id),
+  saveProjectName: (id, name) => ipcRenderer.invoke('project:save-name', id, name),
+  listProjectBackups: () => ipcRenderer.invoke('storage:list-backups'),
+  backupProjects: () => ipcRenderer.invoke('storage:backup'),
+  restoreProjects: (id) => ipcRenderer.invoke('storage:restore', id),
   sendAIPrompt: (projectId, prompt, expectedOutputId, expectedRunId) =>
     ipcRenderer.invoke('ai:submit', projectId, prompt, expectedOutputId, expectedRunId),
   readAISession: (projectId, after, outputId) =>

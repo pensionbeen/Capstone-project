@@ -129,7 +129,11 @@ test('실제 REST: 메모리 프로젝트 조회, 인증·Origin·Host·미등�
   t.after(() => service.close());
   const list = await http(service, '/v1/projects');
   assert.equal(list.status, 200);
-  assert.deepEqual(list.data.data, { projects: f.backend.listProjects(), storage: 'memory' });
+  assert.deepEqual(list.data.data, {
+    projects: f.backend.listProjects(),
+    storage: 'memory',
+    activeProjectId: null,
+  });
   assert.equal(list.text.includes(service.endpoint.token), false);
   for (const [override, expected] of [
     [{ Authorization: undefined }, 401],

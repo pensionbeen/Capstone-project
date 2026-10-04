@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import { type AIState, emptyAISnapshot } from '../shared/ai';
+import type { ProjectCatalog } from '../shared/storage';
 import { FeatureEditor, VerificationEditor, WorkDetails } from './components/FeatureDialogs';
 import type { IconName } from './components/ui';
 import { Badge, Brand, Button, Icon, Modal } from './components/ui';
@@ -51,6 +52,13 @@ const emptyAnalysis: AnalysisDraft = {
 
 export default function App() {
   const [project, setProject] = useState<Project | null>(null);
+  const [catalog, setCatalog] = useState<ProjectCatalog>({
+    projects: [],
+    activeProjectId: null,
+    storage: 'memory',
+  });
+  const [storageLoading, setStorageLoading] = useState(Boolean(window.desktop));
+  const [projectSaving, setProjectSaving] = useState(false);
   const [pendingProject, setPendingProject] = useState<Project | null>(null);
   const [step, setStep] = useState<Step>(0);
   const [inWorkspace, setInWorkspace] = useState(false);
@@ -91,6 +99,48 @@ export default function App() {
   const currentFeature = features.find((feature) => feature.id === openedFeature);
   const pageKey = `${inWorkspace ? view : step}`;
   const desktopProjectId = project?.desktopId;
+  useEffect(() => {
+    if (!window.desktop) return;
+    let disposed = false;
+    void window.desktop
+      .listProjects()
+      .then((saved) => {
+        if (disposed) return;
+        setCatalog(saved);
+        const active = saved.projects.find((p) => p.id === saved.activeProjectId);
+        if (active)
+          setProject({ name: active.name, path: active.path, desktopId: active.id, sample: false });
+      })
+      .catch(() => {
+        if (!disposed)
+          setCatalog({
+            projects: [],
+            activeProjectId: null,
+            storage: 'unavailable',
+            message: '저장된 프로젝트를 조회하지 못했어요. 앱을 다시 실행해 주세요.',
+          });
+      })
+      .finally(() => {
+        if (!disposed) setStorageLoading(false);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  async function reloadProjects() {
+    if (!window.desktop) return;
+    const saved = await window.desktop.listProjects();
+    setCatalog(saved);
+    return saved;
+  }
+  function restoredProjects(saved: ProjectCatalog) {
+    setCatalog(saved);
+    const active = saved.projects.find((p) => p.id === saved.activeProjectId);
+    displayProject(
+      active ? { name: active.name, path: active.path, desktopId: active.id, sample: false } : null,
+    );
+  }
   useEffect(() => {
     setAIStatus(emptyAISnapshot);
     if (!desktopProjectId || !window.desktop) return;
@@ -133,7 +183,7 @@ export default function App() {
       ].slice(-100),
     );
   }
-  function applyProject(value: Project) {
+  function displayProject(value: Project | null) {
     setShowAI(false);
     setProject(value);
     setPendingProject(null);
@@ -146,7 +196,51 @@ export default function App() {
     setStep(0);
     setInWorkspace(false);
     setView('overview');
-    addActivity('settings', '프로젝트 선택', `${value.name}의 화면 흐름을 시작했어요.`);
+    if (value) addActivity('settings', '프로젝트 선택', `${value.name}의 화면 흐름을 시작했어요.`);
+  }
+  async function applyProject(value: Project) {
+    if (projectSaving) return;
+    setProjectSaving(true);
+    try {
+      if (value.desktopId && window.desktop) {
+        const result = await window.desktop.activateProject(value.desktopId);
+        if (!result.ok) {
+          setToast(result.message);
+          return;
+        }
+        displayProject({
+          name: result.project.name,
+          path: result.project.path,
+          desktopId: result.project.id,
+          sample: false,
+        });
+        await reloadProjects();
+      } else displayProject(value);
+    } catch {
+      setToast('프로젝트 선택 결과를 확인하지 못했어요. 저장 목록을 다시 확인해 주세요.');
+    } finally {
+      setProjectSaving(false);
+    }
+  }
+  async function startProject() {
+    if (!project?.name.trim() || projectSaving) return;
+    setProjectSaving(true);
+    try {
+      if (project.desktopId && window.desktop) {
+        const result = await window.desktop.saveProjectName(project.desktopId, project.name);
+        if (!result.ok) {
+          setToast(result.message);
+          return;
+        }
+        setProject({ ...project, name: result.project.name });
+        await reloadProjects();
+      }
+      setStep(1);
+    } catch {
+      setToast('저장 결과를 확인하지 못했어요. 이름 입력은 유지했어요.');
+    } finally {
+      setProjectSaving(false);
+    }
   }
   function chooseProject(value: Project) {
     if (project?.path === value.path && project.sample === value.sample) return;
@@ -390,11 +484,12 @@ export default function App() {
             {!inWorkspace && step === 0 && (
               <ProjectPage
                 project={project}
+                catalog={catalog}
+                loading={storageLoading || projectSaving}
+                onRestored={restoredProjects}
                 onSelect={chooseProject}
                 onName={(name) => setProject((value) => (value ? { ...value, name } : value))}
-                onNext={() => {
-                  if (project?.name.trim()) setStep(1);
-                }}
+                onNext={startProject}
               />
             )}
             {!inWorkspace && step === 1 && (
@@ -575,16 +670,26 @@ export default function App() {
         </Modal>
       )}
       {pendingProject && (
-        <Modal title="프로젝트를 바꿀까요?" onClose={() => setPendingProject(null)}>
+        <Modal
+          title="프로젝트를 바꿀까요?"
+          busy={projectSaving}
+          onClose={() => setPendingProject(null)}
+        >
           <p className="dialog-copy">
             현재 창의 요구분석, 기능, 검증 기록을 비우고 <strong>{pendingProject.name}</strong>에서
             새로 시작해요. 기존 프로젝트 폴더의 파일은 변경하지 않아요.
           </p>
           <div className="modal-actions">
-            <Button variant="ghost" onClick={() => setPendingProject(null)}>
+            <Button
+              variant="ghost"
+              disabled={projectSaving}
+              onClick={() => setPendingProject(null)}
+            >
               현재 프로젝트 유지
             </Button>
-            <Button onClick={() => applyProject(pendingProject)}>프로젝트 바꾸기</Button>
+            <Button disabled={projectSaving} onClick={() => applyProject(pendingProject)}>
+              프로젝트 바꾸기
+            </Button>
           </div>
         </Modal>
       )}

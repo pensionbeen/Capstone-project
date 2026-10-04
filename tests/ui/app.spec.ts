@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { _electron, type ElectronApplication, expect, type Page, test } from '@playwright/test';
@@ -13,7 +14,7 @@ test.beforeEach(async () => {
     ),
   ) as Record<string, string>;
   app = await _electron.launch({
-    args: ['.', `--user-data-dir=${resolve('.runtime', 'electron-test-profile')}`],
+    args: ['.', `--user-data-dir=${resolve('.runtime', `electron-test-${randomUUID()}`)}`],
     env,
   });
   page = await app.firstWindow();
@@ -159,6 +160,11 @@ test('renderer는 Node 권한 없이 제한된 폴더 선택 API만 가진다', 
       'readAIStatus',
       'reconnectAI',
       'listProjects',
+      'activateProject',
+      'saveProjectName',
+      'listProjectBackups',
+      'backupProjects',
+      'restoreProjects',
       'sendAIPrompt',
       'readAISession',
       'resizeAISession',

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { basename, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type AIReply, type AISnapshot, activeAIStates, emptyAISnapshot } from '../../shared/ai.js';
+import type { LocalProject } from '../../shared/local-api.js';
 import { inspectDirectory } from '../policy.js';
 import { codexArguments, inspectCodex, installedCodex } from './codex.js';
 import { OutputBuffer, promptIsValid, rejected, sizeIsValid, UUID } from './contracts.js';
@@ -30,6 +31,7 @@ const messages: Record<string, string> = {
 
 export class SessionManager {
   private projects = new Map<string, string>();
+  private projectNames = new Map<string, string>();
   private projectId: string | null = null;
   private state = { ...emptyAISnapshot };
   private output = new OutputBuffer();
@@ -60,13 +62,27 @@ export class SessionManager {
   listProjects() {
     return [...this.projects].map(([id, path]) => ({
       id,
-      name: basename(path) || parse(path).root,
+      name: this.projectNames.get(id) ?? (basename(path) || parse(path).root),
       path,
     }));
   }
 
   hasProject(id: string) {
     return this.projects.has(id);
+  }
+
+  get canChangeProjects() {
+    return !this.busy && !this.shutdownRequested && this.state.cleanupConfirmed;
+  }
+  replaceProjects(projects: LocalProject[], resetSession = false) {
+    this.projects = new Map(projects.map((p) => [p.id, p.path]));
+    this.projectNames = new Map(projects.map((p) => [p.id, p.name]));
+    if (resetSession) {
+      this.projectId = null;
+      this.state = { ...emptyAISnapshot };
+      this.output = new OutputBuffer();
+      this.conversation = undefined;
+    }
   }
 
   registerProject(path: string) {

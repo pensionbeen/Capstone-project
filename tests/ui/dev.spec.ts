@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { _electron, expect, test } from '@playwright/test';
 import { createServer } from 'vite';
@@ -11,7 +12,7 @@ test('개발 모드에서도 스타일과 StrictMode 모달이 유지된다', as
     ),
   ) as Record<string, string>;
   const app = await _electron.launch({
-    args: ['.', '--dev', `--user-data-dir=${resolve('.runtime', 'electron-dev-test-profile')}`],
+    args: ['.', '--dev', `--user-data-dir=${resolve('.runtime', `electron-dev-${randomUUID()}`)}`],
     env,
   });
   try {
