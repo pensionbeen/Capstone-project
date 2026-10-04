@@ -101,7 +101,7 @@ Markdown은 UTF-8로 저장한다. Windows PowerShell에서 읽을 때는 `Get-C
 | `npm run dev`, `npm run build`, `npm run lint`, `npm run typecheck`, `npm test` | 앞으로 설정할 수 있는 **명령 이름 제안**. 현재 존재·성공한다고 안내하지 않음 |
 | 문서 링크·ID·공수·비밀 검사 | 이번 문서 작성 시 별도 검사. 애플리케이션 테스트와 구분 |
 
-위 앱 명령 표는 초기 계획 시점의 상태다. 현재는 X-001 분리 실험에 Node 검사/조사/프로브 명령이 생겼으며 실제 결과는 [실험 보고](experiments/X-001.md)를 따른다. 앱의 build/lint/typecheck 명령은 여전히 미정이다. X-001 node-pty 의존성 후보를 별도 manifest에 고정했지만 네트워크 제한으로 설치/잠금 파일 생성은 못 했다. 기존 Codex/Gemini CLI는 재설치하지 않는다.
+위 앱 명령 표는 초기 계획 시점의 상태다. X-001의 후속 설치·검증 결과는 [실험 보고](experiments/X-001.md)를 따른다. **2026-10-04 T-002 UI 작업에서 앱의 dev/build/lint/typecheck/test/test:ui 명령을 구성했다.** 실제 실행 결과와 미검증 범위는 [UI 안내](UI_PROTOTYPE.md)·[환경](ENVIRONMENT.md)·WL-20261004-03을 따른다. 기존 Codex/Gemini CLI는 재설치하지 않는다.
 
 ## 필요한 검증
 

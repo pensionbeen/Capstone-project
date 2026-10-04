@@ -2,6 +2,20 @@
 
 기준일: **2026-10-03 KST**. 기록 ID: **WL-20261003-03**. 작업: T-001, 관련 요구: R-05·R-14·R-16. 현재 결과는 환경 조사와 개발 준비이며 앱 실행·AI 대화·PTY 호환성 검증이 아니다.
 
+## 후속 T-002·UI 확인 — WL-20261004-03
+
+2026-10-04 사용자 UI 개발 요청으로 저장소 루트에 실행 가능한 앱을 추가했다. 아래 과거 T-001/X-001 조사와 구분한다.
+
+| 항목 | 이번 확인 |
+|---|---|
+| 실행 환경 | Windows x64 · Node 24.15.0 · npm 11.12.1 |
+| 의존성 | Electron 44.5.1 · React/React DOM 19.3.0 · TypeScript 7.0.2 · Vite 8.3.2 · Biome 2.5.15 · Playwright 1.63.0, 정확한 버전과 lockfile 관리 |
+| 설치 | 승인된 네트워크 실행에서 npm install 성공. Electron 실행 파일은 install.js 별도 실행으로 확보 |
+| 실제 검사 | lint·typecheck·build 통과, 로직/경계 12개·Electron 화면 9개 통과. 개발 Vite 화면도 실제 Electron에서 확인 |
+| 미검증 | Windows 폴더 창 직접 조작, 설치 패키지·다른 PC·실제 AI 앱 통합·OS 보호·두 기기 전송·저장 복원 |
+
+현재 명령·설치 순서·검증 도구 종료 이력은 [UI 안내](UI_PROTOTYPE.md)에 둔다. OS 보안·전역 Git 설정·기존 AI 로그인은 바꾸지 않았다. 실행 결과물·의존성·스크린샷은 Git에서 제외한다.
+
 ## 후속 X-001 확인 — WL-20261003-09
 
 아래 T-001 본문은 당시 조사 이력이다. 이번 세션에서는 승인된 외부 실행으로 Codex 0.160.0·Gemini CLI 0.62.0·Antigravity 1.2.16 설치 경로에 접근했다. Codex의 기존 ChatGPT 로그인·Sol/High 응답·Astra/Max 검토·CLI 설정을 확인했다. API 인증 전환과 CLI 업데이트는 하지 않았다.
