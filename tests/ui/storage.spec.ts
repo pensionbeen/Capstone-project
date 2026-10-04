@@ -72,6 +72,51 @@ test('실제 앱 재시작 뒤 이름·폴더·ID·선택 복원, AI 자동 실�
   await page.screenshot({ path: '.runtime/screens/13-project-restored.png', fullPage: true });
 });
 
+test('실제 프로젝트 기능 초안과 검증 결과가 저장되고 재시작 뒤 조회된다', async () => {
+  await select();
+  await page.getByLabel('프로젝트 이름', { exact: true }).fill('기능 계획 검사');
+  await page.getByRole('button', { name: '이 프로젝트로 시작' }).click();
+  await page.getByRole('button', { name: '예시로 요구분석 시작' }).click();
+  await page.getByRole('textbox', { name: '만들고 싶은 서비스' }).fill('할 일 앱');
+  await page.getByRole('button', { name: '요구분석 시작', exact: true }).click();
+  await page.getByRole('radio', { name: '나 혼자', exact: true }).check();
+  await page.getByRole('button', { name: '기능 초안 보기' }).click();
+  await expect
+    .poll(async () => {
+      const list = await catalog();
+      const id = list.activeProjectId;
+      return id
+        ? (await page.evaluate((key) => window.desktop?.loadFeaturePlan(key), id))?.plan?.features
+            .length
+        : 0;
+    })
+    .toBe(4);
+  await page.getByRole('button', { name: '기능 4개 확정하고 시작' }).click();
+  await page.getByRole('button', { name: '작업 내용 열기' }).click();
+  await page.getByRole('button', { name: '직접 확인한 결과 기록' }).click();
+  for (const checkbox of await page.getByRole('dialog').getByRole('checkbox').all())
+    await checkbox.check();
+  await page
+    .getByLabel('실제 확인한 결과')
+    .fill('프로젝트 계획 검증 UI에서 완료 조건을 확인했습니다.');
+  await page.getByLabel('검증 근거', { exact: true }).fill('T-006 검증 화면');
+  await page.getByRole('button', { name: '검증 결과 저장' }).click();
+  await expect(page.getByRole('progressbar', { name: '검증 완료율' })).toHaveAttribute(
+    'value',
+    '25',
+  );
+  const before = await catalog();
+  const id = before.activeProjectId;
+  if (!id) throw new Error('No active project after feature creation');
+  const stored = await page.evaluate((key) => window.desktop?.loadFeaturePlan(key), id);
+  expect(stored?.ok).toBe(true);
+  expect(stored?.plan?.verifications).toHaveLength(1);
+  await app.close();
+  await launch();
+  const reopened = await page.evaluate((key) => window.desktop?.loadFeaturePlan(key), id);
+  expect(reopened).toEqual(stored);
+});
+
 test('이름 저장 잠금 실패 시 입력·선택 보존, 재시도 성공과 취소 유지', async () => {
   await select();
   const before = await catalog();

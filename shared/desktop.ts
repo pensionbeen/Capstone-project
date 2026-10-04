@@ -1,6 +1,13 @@
 import type { AIAvailability, AIReply, AISnapshot } from './ai.js';
+import type { ProjectFeaturePlan } from './feature-plan.js';
 import type { ConnectionFailure } from './local-api.js';
-import type { ProjectBackup, ProjectCatalog, ProjectResult, StorageResult } from './storage.js';
+import type {
+  FeaturePlanResult,
+  ProjectBackup,
+  ProjectCatalog,
+  ProjectResult,
+  StorageResult,
+} from './storage.js';
 
 export type FolderResult =
   | { status: 'selected'; name: string; path: string; projectId?: string }
@@ -14,6 +21,8 @@ export interface DesktopBridge {
   listProjects: () => Promise<ProjectCatalog>;
   activateProject: (id: string) => Promise<ProjectResult>;
   saveProjectName: (id: string, name: string) => Promise<ProjectResult>;
+  loadFeaturePlan: (id: string) => Promise<FeaturePlanResult>;
+  saveFeaturePlan: (id: string, plan: ProjectFeaturePlan) => Promise<FeaturePlanResult>;
   listProjectBackups: () => Promise<{ backups: ProjectBackup[]; directory: string }>;
   backupProjects: () => Promise<StorageResult>;
   restoreProjects: (id: string) => Promise<StorageResult>;

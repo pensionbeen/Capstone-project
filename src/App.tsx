@@ -1,5 +1,10 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { type AIState, emptyAISnapshot } from '../shared/ai';
+import {
+  emptyFeaturePlan,
+  type ProjectFeaturePlan,
+  type StoredFeature,
+} from '../shared/feature-plan';
 import type { ProjectCatalog } from '../shared/storage';
 import { FeatureEditor, VerificationEditor, WorkDetails } from './components/FeatureDialogs';
 import type { IconName } from './components/ui';
@@ -68,6 +73,8 @@ export default function App() {
   const [analysis, setAnalysis] = useState(emptyAnalysis);
   const [features, setFeatures] = useState<Feature[]>([]);
   const [records, setRecords] = useState<Verification[]>([]);
+  const [featurePlan, setFeaturePlan] = useState<ProjectFeaturePlan>(emptyFeaturePlan());
+  const planSaveLock = useRef(false);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [editing, setEditing] = useState<Feature | null>(null);
   const [openedFeature, setOpenedFeature] = useState<string | null>(null);
@@ -104,12 +111,29 @@ export default function App() {
     let disposed = false;
     void window.desktop
       .listProjects()
-      .then((saved) => {
+      .then(async (saved) => {
         if (disposed) return;
         setCatalog(saved);
         const active = saved.projects.find((p) => p.id === saved.activeProjectId);
-        if (active)
-          setProject({ name: active.name, path: active.path, desktopId: active.id, sample: false });
+        if (active) {
+          const result = await window.desktop?.loadFeaturePlan(active.id);
+          if (disposed) return;
+          if (result?.ok) {
+            setProject({
+              name: active.name,
+              path: active.path,
+              desktopId: active.id,
+              sample: false,
+            });
+            setFeaturePlan(result.plan);
+            setFeatures(
+              result.plan.features
+                .filter((item) => item.kind === 'leaf')
+                .map(({ parentId, kind, order, ...item }) => item),
+            );
+            setRecords(result.plan.verifications);
+          } else setToast(result?.message ?? '저장된 기능 목록을 불러오지 못했어요.');
+        }
       })
       .catch(() => {
         if (!disposed)
@@ -134,12 +158,20 @@ export default function App() {
     setCatalog(saved);
     return saved;
   }
-  function restoredProjects(saved: ProjectCatalog) {
+  async function restoredProjects(saved: ProjectCatalog) {
     setCatalog(saved);
     const active = saved.projects.find((p) => p.id === saved.activeProjectId);
-    displayProject(
-      active ? { name: active.name, path: active.path, desktopId: active.id, sample: false } : null,
-    );
+    if (active && window.desktop) {
+      const loaded = await window.desktop.loadFeaturePlan(active.id);
+      if (!loaded.ok) {
+        setToast(loaded.message);
+        return;
+      }
+      displayProject(
+        { name: active.name, path: active.path, desktopId: active.id, sample: false },
+        loaded.plan,
+      );
+    } else displayProject(null);
   }
   useEffect(() => {
     setAIStatus(emptyAISnapshot);
@@ -183,13 +215,18 @@ export default function App() {
       ].slice(-100),
     );
   }
-  function displayProject(value: Project | null) {
+  function displayProject(value: Project | null, plan = emptyFeaturePlan()) {
     setShowAI(false);
     setProject(value);
     setPendingProject(null);
     setAnalysis(emptyAnalysis);
-    setFeatures([]);
-    setRecords([]);
+    setFeaturePlan(plan);
+    setFeatures(
+      plan.features
+        .filter((item) => item.kind === 'leaf')
+        .map(({ parentId, kind, order, ...item }) => item),
+    );
+    setRecords(plan.verifications);
     setActivities([]);
     setProtection(initialProtection);
     setProviders(['Codex']);
@@ -203,17 +240,25 @@ export default function App() {
     setProjectSaving(true);
     try {
       if (value.desktopId && window.desktop) {
+        const loaded = await window.desktop.loadFeaturePlan(value.desktopId);
+        if (!loaded.ok) {
+          setToast(loaded.message);
+          return;
+        }
         const result = await window.desktop.activateProject(value.desktopId);
         if (!result.ok) {
           setToast(result.message);
           return;
         }
-        displayProject({
-          name: result.project.name,
-          path: result.project.path,
-          desktopId: result.project.id,
-          sample: false,
-        });
+        displayProject(
+          {
+            name: result.project.name,
+            path: result.project.path,
+            desktopId: result.project.id,
+            sample: false,
+          },
+          loaded.plan,
+        );
         await reloadProjects();
       } else displayProject(value);
     } catch {
@@ -247,14 +292,71 @@ export default function App() {
     if (project && (analysis.goal || features.length)) setPendingProject(value);
     else applyProject(value);
   }
-  function generateDrafts() {
+  function storedPlan(
+    nextFeatures: Feature[],
+    nextRecords: Verification[],
+    base = featurePlan,
+  ): ProjectFeaturePlan {
+    const oldById = new Map(base.features.map((item) => [item.id, item]));
+    const visibleIds = new Set(nextFeatures.map((item) => item.id));
+    const groups = base.features.filter((item) => item.kind === 'group');
+    const leaves: StoredFeature[] = nextFeatures.map((item, order) => {
+      const previous = oldById.get(item.id);
+      return {
+        ...item,
+        parentId: previous?.parentId ?? null,
+        kind: 'leaf',
+        order: previous?.order ?? order,
+      };
+    });
+    const savedIds = new Set([...groups.map((item) => item.id), ...leaves.map((item) => item.id)]);
+    return {
+      features: [...groups, ...leaves],
+      dependencies: base.dependencies.filter(
+        (item) => savedIds.has(item.featureId) && savedIds.has(item.prerequisiteId),
+      ),
+      verifications: nextRecords.filter((item) => visibleIds.has(item.featureId)),
+    };
+  }
+  async function persistPlan(
+    nextFeatures: Feature[],
+    nextRecords: Verification[],
+    base = featurePlan,
+  ) {
+    if (planSaveLock.current) {
+      setToast('기능 저장을 마친 뒤 다시 시도해 주세요.');
+      return false;
+    }
+    const candidate = storedPlan(nextFeatures, nextRecords, base);
+    if (!project?.desktopId || !window.desktop) {
+      setFeaturePlan(candidate);
+      return true;
+    }
+    planSaveLock.current = true;
+    try {
+      const saved = await window.desktop.saveFeaturePlan(project.desktopId, candidate);
+      if (!saved.ok) {
+        setToast(saved.message);
+        return false;
+      }
+      setFeaturePlan(saved.plan);
+      return true;
+    } catch {
+      setToast('저장 결과를 확인하지 못했어요. 다시 조회해 주세요.');
+      return false;
+    } finally {
+      planSaveLock.current = false;
+    }
+  }
+  async function generateDrafts() {
     if (!analysis.goal.trim() || !analysis.audience) return;
-    setFeatures(
-      makeDrafts(analysis.goal, analysis.scope).map((feature) => ({
-        ...feature,
-        id: crypto.randomUUID(),
-      })),
-    );
+    const next = makeDrafts(analysis.goal, analysis.scope).map((feature) => ({
+      ...feature,
+      id: crypto.randomUUID(),
+    }));
+    if (!(await persistPlan(next, [], emptyFeaturePlan()))) return;
+    setFeatures(next);
+    setRecords([]);
     setShowRegenerate(false);
     setStep(3);
   }
@@ -269,7 +371,7 @@ export default function App() {
       included: true,
     });
   }
-  function saveFeature(value: Feature) {
+  async function saveFeature(value: Feature) {
     const old = features.find((item) => item.id === value.id);
     const next = old
       ? editFeature(old, {
@@ -278,36 +380,48 @@ export default function App() {
           criteria: value.criteria.trim(),
         })
       : { ...value, title: value.title.trim(), criteria: value.criteria.trim() };
-    setFeatures((items) =>
-      old ? items.map((item) => (item.id === value.id ? next : item)) : [...items, next],
-    );
+    const updated = old
+      ? features.map((item) => (item.id === value.id ? next : item))
+      : [...features, next];
+    if (!(await persistPlan(updated, records))) return;
+    setFeatures(updated);
     setEditing(null);
     addActivity('feature', old ? '기능 내용 수정' : '새 기능 추가', next.title);
-    setToast('이 창에 기능을 저장했어요.');
+    setToast(project?.desktopId ? '기능과 완료 조건을 저장했어요.' : '이 창에 기능을 저장했어요.');
+  }
+  async function toggleFeature(id: string) {
+    const updated = features.map((item) =>
+      item.id === id ? { ...item, included: !item.included } : item,
+    );
+    if (await persistPlan(updated, records)) setFeatures(updated);
   }
   function navigate(next: View) {
     setView(next);
     setMobileMenu(false);
   }
-  function recordVerification(value: Omit<Verification, 'id' | 'createdAt' | 'featureTitle'>) {
+  async function recordVerification(
+    value: Omit<Verification, 'id' | 'createdAt' | 'featureTitle'>,
+  ) {
     const feature = features.find((item) => item.id === value.featureId);
     if (!feature || feature.revision !== value.revision) return;
-    setRecords((items) => [
-      ...items,
+    const updated = [
+      ...records,
       {
         ...value,
         featureTitle: feature.title,
         id: crypto.randomUUID(),
         createdAt: new Date().toISOString(),
       },
-    ]);
+    ];
+    if (!(await persistPlan(features, updated))) return;
+    setRecords(updated);
     setVerifyFeature(null);
     addActivity(
       'verification',
       value.result === 'passed' ? '검증 통과 기록' : '수정 필요 기록',
       feature.title,
     );
-    setToast('이 창에 검증 결과를 저장했어요.');
+    setToast(project?.desktopId ? '검증 결과를 저장했어요.' : '이 창에 검증 결과를 저장했어요.');
   }
 
   return (
@@ -535,7 +649,7 @@ export default function App() {
                 onBack={() => setStep(1)}
                 onNext={() => {
                   if (features.length) setShowRegenerate(true);
-                  else generateDrafts();
+                  else void generateDrafts();
                 }}
               />
             )}
@@ -543,13 +657,7 @@ export default function App() {
               <ConfirmPage
                 features={features}
                 onEdit={setEditing}
-                onToggle={(id) =>
-                  setFeatures((items) =>
-                    items.map((item) =>
-                      item.id === id ? { ...item, included: !item.included } : item,
-                    ),
-                  )
-                }
+                onToggle={(id) => void toggleFeature(id)}
                 onAdd={addFeature}
                 onBack={() => setStep(2)}
                 onNext={() => {
@@ -602,7 +710,7 @@ export default function App() {
               <span>
                 <span className="tiny-logo">ORBIT</span>차근차근, 만드는 즐거움
               </span>
-              <span>이 창에서만 유지되는 미리보기</span>
+              <span>기능·완료 조건·검증 결과는 프로젝트에 저장됩니다</span>
             </footer>
           </div>
         </main>
@@ -649,7 +757,7 @@ export default function App() {
         />
       )}
       {showRegenerate && (
-        <Modal title="작성한 기능 초안이 있어요" onClose={() => setShowRegenerate(false)}>
+        <Modal title="저장한 기능 초안이 있어요" onClose={() => setShowRegenerate(false)}>
           <p className="dialog-copy">
             직접 수정한 내용을 유지하거나, 현재 요구분석으로 새 예시 초안을 만들 수 있어요. 새로
             만들면 기존 초안을 대체해요.
@@ -676,8 +784,8 @@ export default function App() {
           onClose={() => setPendingProject(null)}
         >
           <p className="dialog-copy">
-            현재 창의 요구분석, 기능, 검증 기록을 비우고 <strong>{pendingProject.name}</strong>에서
-            새로 시작해요. 기존 프로젝트 폴더의 파일은 변경하지 않아요.
+            현재 창의 요구분석 입력을 정리하고 <strong>{pendingProject.name}</strong>을 엽니다.
+            기능·완료 조건·검증 기록은 각 프로젝트에 저장돼 다시 선택하면 불러와요.
           </p>
           <div className="modal-actions">
             <Button

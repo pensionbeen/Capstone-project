@@ -12,6 +12,11 @@ import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { ProjectStore } from '../dist/desktop/electron/storage/project-store.js';
+import {
+  emptyFeaturePlan,
+  type ProjectFeaturePlan,
+  validateFeaturePlan,
+} from '../shared/feature-plan.ts';
 
 function fixture() {
   mkdirSync('.runtime/storage-tests', { recursive: true });
@@ -289,6 +294,210 @@ test('missing project directory remains listed but cannot replace the active sel
     assert.deepEqual(reopened.catalog(), before);
     assert.equal(readdirSync(f.directory).includes('projects.sqlite-wal'), false);
     reopened.close();
+  } finally {
+    f.store.close();
+  }
+});
+
+function samplePlan(): ProjectFeaturePlan {
+  const group = randomUUID(),
+    first = randomUUID(),
+    second = randomUUID();
+  return {
+    features: [
+      {
+        id: group,
+        parentId: null,
+        kind: 'group',
+        title: '프로젝트 준비',
+        description: '',
+        criteria: '',
+        included: true,
+        revision: 1,
+        order: 0,
+      },
+      {
+        id: first,
+        parentId: group,
+        kind: 'leaf',
+        title: '프로젝트 생성',
+        description: '첫 기능',
+        criteria: '폴더를 선택하면 프로젝트가 열린다.\n취소하면 현재 선택을 유지한다.',
+        included: true,
+        revision: 2,
+        order: 0,
+      },
+      {
+        id: second,
+        parentId: group,
+        kind: 'leaf',
+        title: '저장',
+        description: '내용을 저장한다.',
+        criteria: '저장 후 다시 열 수 있다.',
+        included: true,
+        revision: 1,
+        order: 1,
+      },
+    ],
+    dependencies: [{ featureId: second, prerequisiteId: first }],
+    verifications: [
+      {
+        id: randomUUID(),
+        featureId: first,
+        featureTitle: '프로젝트 생성',
+        revision: 2,
+        result: 'passed',
+        observation: '취소와 폴더 선택을 확인했다.',
+        evidence: 'test run',
+        checkedCriteria: ['폴더를 선택하면 프로젝트가 열린다.', '취소하면 현재 선택을 유지한다.'],
+        createdAt: new Date().toISOString(),
+      },
+    ],
+  };
+}
+function at<T>(items: T[], index: number): T {
+  const item = items[index];
+  if (!item) throw new Error(`Missing fixture entry ${index}`);
+  return item;
+}
+
+test('feature hierarchy, dependency and revisioned verification persist per project and survive a verified backup restore', () => {
+  const f = fixture();
+  try {
+    const project = f.store.register(f.folder, true),
+      otherFolder = join(f.root, 'other');
+    mkdirSync(otherFolder);
+    const other = f.store.register(otherFolder);
+    const plan = samplePlan();
+    assert.deepEqual(f.store.saveFeaturePlan(project.id, plan), plan);
+    assert.deepEqual(f.store.featurePlan(project.id), plan);
+    assert.deepEqual(f.store.featurePlan(other.id), emptyFeaturePlan());
+    const backup = f.store.backup();
+    f.store.saveFeaturePlan(project.id, emptyFeaturePlan());
+    f.store.restore(backup.id);
+    assert.deepEqual(f.store.featurePlan(project.id), plan);
+    f.store.close();
+    const reopened = new ProjectStore(f.directory);
+    assert.deepEqual(reopened.featurePlan(project.id), plan);
+    reopened.close();
+  } finally {
+    f.store.close();
+  }
+});
+
+test('feature graph validation rejects hierarchy/dependency cycles, invalid groups and cross-project links', () => {
+  const f = fixture();
+  try {
+    const project = f.store.register(f.folder, true),
+      otherFolder = join(f.root, 'other');
+    mkdirSync(otherFolder);
+    const other = f.store.register(otherFolder);
+    const good = samplePlan();
+    assert.equal(validateFeaturePlan(good), true);
+    const parentCycle = structuredClone(good);
+    at(parentCycle.features, 0).parentId = at(parentCycle.features, 1).id;
+    assert.equal(validateFeaturePlan(parentCycle), false);
+    const dependencyCycle = structuredClone(good);
+    const dependency = at(dependencyCycle.dependencies, 0);
+    dependencyCycle.dependencies.push({
+      featureId: dependency.prerequisiteId,
+      prerequisiteId: dependency.featureId,
+    });
+    assert.equal(validateFeaturePlan(dependencyCycle), false);
+    const invalidGroup = structuredClone(good);
+    at(invalidGroup.features, 0).kind = 'leaf';
+    assert.equal(validateFeaturePlan(invalidGroup), false);
+    const crossProject = structuredClone(good);
+    at(crossProject.dependencies, 0).prerequisiteId = randomUUID();
+    assert.equal(validateFeaturePlan(crossProject), false);
+    f.store.saveFeaturePlan(project.id, good);
+    assert.throws(() => f.store.saveFeaturePlan(other.id, crossProject));
+    assert.deepEqual(f.store.featurePlan(project.id), good);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('feature plan writes roll back atomically when a relationship insert fails', () => {
+  const f = fixture();
+  try {
+    const project = f.store.register(f.folder, true),
+      plan = samplePlan();
+    f.store.saveFeaturePlan(project.id, plan);
+    const db = dbOf(f.store),
+      original = db.prepare.bind(db);
+    db.prepare = ((sql: string) => {
+      if (sql.startsWith('INSERT INTO feature_dependencies'))
+        throw new Error('injected relation failure');
+      return original(sql);
+    }) as typeof db.prepare;
+    assert.throws(() => f.store.saveFeaturePlan(project.id, plan), /relation failure/);
+    db.prepare = original;
+    assert.deepEqual(f.store.featurePlan(project.id), plan);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('v1 project database upgrades only after a v1 safety copy and v1 backup restore remains supported', () => {
+  const f = fixture();
+  try {
+    const project = f.store.register(f.folder, true);
+    f.store.close();
+    const db = new DatabaseSync(f.path);
+    db.exec(
+      'DROP TABLE verification_criteria; DROP TABLE verifications; DROP TABLE feature_dependencies; DROP TABLE features; PRAGMA user_version=1',
+    );
+    db.close();
+    const v1 = new ProjectStore(f.directory);
+    assert.equal(dbOf(v1).prepare('PRAGMA user_version').get()?.user_version, 2);
+    assert.deepEqual(
+      v1.catalog().projects.map(({ id, name }) => ({ id, name })),
+      [{ id: project.id, name: project.name }],
+    );
+    const safety = v1.backups()[0];
+    assert.ok(safety);
+    const backupDb = new DatabaseSync(
+      join(f.directory, 'backups', `${safety.createdAt}-${safety.id}.sqlite`),
+      { readOnly: true },
+    );
+    assert.equal(backupDb.prepare('PRAGMA user_version').get()?.user_version, 1);
+    backupDb.close();
+    const plan = samplePlan();
+    v1.saveFeaturePlan(project.id, plan);
+    v1.restore(safety.id);
+    assert.deepEqual(v1.featurePlan(project.id), emptyFeaturePlan());
+  } finally {
+    f.store.close();
+  }
+});
+
+test('v1 migration failure leaves the live database unchanged and can retry', () => {
+  const f = fixture();
+  try {
+    f.store.register(f.folder, true);
+    f.store.close();
+    const db = new DatabaseSync(f.path);
+    db.exec(
+      'DROP TABLE verification_criteria; DROP TABLE verifications; DROP TABLE feature_dependencies; DROP TABLE features; PRAGMA user_version=1',
+    );
+    db.close();
+    const before = hash(f.path),
+      original = DatabaseSync.prototype.exec;
+    try {
+      DatabaseSync.prototype.exec = function (sql: string) {
+        if (sql.startsWith('CREATE TABLE features')) throw new Error('injected migration failure');
+        return original.call(this, sql);
+      };
+      assert.throws(() => new ProjectStore(f.directory), /migration failure/);
+    } finally {
+      DatabaseSync.prototype.exec = original;
+    }
+    assert.equal(hash(f.path), before);
+    const recovered = new ProjectStore(f.directory);
+    assert.equal(dbOf(recovered).prepare('PRAGMA user_version').get()?.user_version, 2);
+    assert.equal(recovered.backups().length, 2);
+    recovered.close();
   } finally {
     f.store.close();
   }

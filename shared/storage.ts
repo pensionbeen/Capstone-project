@@ -1,3 +1,4 @@
+import type { ProjectFeaturePlan } from './feature-plan.js';
 import type { LocalProject } from './local-api.js';
 
 export interface SavedProject extends LocalProject {
@@ -17,4 +18,7 @@ export interface ProjectBackup {
 export type ProjectResult = { ok: true; project: LocalProject } | { ok: false; message: string };
 export type StorageResult =
   | { ok: true; message: string; catalog?: ProjectCatalog }
+  | { ok: false; message: string };
+export type FeaturePlanResult =
+  | { ok: true; plan: ProjectFeaturePlan }
   | { ok: false; message: string };
