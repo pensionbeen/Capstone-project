@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { type AIState, emptyAISnapshot } from '../shared/ai';
 import { FeatureEditor, VerificationEditor, WorkDetails } from './components/FeatureDialogs';
 import type { IconName } from './components/ui';
 import { Badge, Brand, Button, Icon, Modal } from './components/ui';
@@ -38,6 +39,9 @@ const navigation: { id: View; label: string; icon: IconName }[] = [
   { id: 'transfer', label: '파일 전송', icon: 'transfer' },
   { id: 'history', label: '실행 이력', icon: 'history' },
 ];
+const AIConsole = lazy(() =>
+  import('./components/AIConsole').then((module) => ({ default: module.AIConsole })),
+);
 const emptyAnalysis: AnalysisDraft = {
   goal: '',
   started: false,
@@ -65,9 +69,51 @@ export default function App() {
   const [showProjectSwitch, setShowProjectSwitch] = useState(false);
   const [mobileMenu, setMobileMenu] = useState(false);
   const [toast, setToast] = useState('');
+  const [showAI, setShowAI] = useState(false);
+  const [aiStatus, setAIStatus] = useState(emptyAISnapshot);
+  const aiLabels: Record<AIState, string> = {
+    idle: '연결 전',
+    starting: '준비 중',
+    running: '실행 중',
+    stopping: '정리 중',
+    exited: '실행 종료',
+    interrupted: '중단됨',
+    error: '확인 필요',
+  };
+  const connectionSummary = aiStatus.id
+    ? providers
+        .map((provider) =>
+          provider === 'Codex' ? `Codex ${aiLabels[aiStatus.state]}` : `${provider} 연결 전`,
+        )
+        .join(' · ')
+    : `${providers.join(' · ')} 연결 전`;
   const includedFeatures = features.filter((feature) => feature.included);
   const currentFeature = features.find((feature) => feature.id === openedFeature);
   const pageKey = `${inWorkspace ? view : step}`;
+  const desktopProjectId = project?.desktopId;
+  useEffect(() => {
+    setAIStatus(emptyAISnapshot);
+    if (!desktopProjectId || !window.desktop) return;
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const snapshot = await window.desktop?.readAISession(
+          desktopProjectId,
+          Number.MAX_SAFE_INTEGER,
+        );
+        if (!disposed && snapshot) setAIStatus(snapshot);
+      } catch {
+        /* The conversation window displays connection errors. */
+      }
+      if (!disposed) timer = setTimeout(poll, 800);
+    };
+    void poll();
+    return () => {
+      disposed = true;
+      clearTimeout(timer);
+    };
+  }, [desktopProjectId]);
 
   useEffect(() => {
     // Move keyboard focus with the page; keep the initial folder action unobscured.
@@ -91,6 +137,7 @@ export default function App() {
     );
   }
   function applyProject(value: Project) {
+    setShowAI(false);
     setProject(value);
     setPendingProject(null);
     setAnalysis(emptyAnalysis);
@@ -224,7 +271,7 @@ export default function App() {
             </nav>
             <div className="sidebar-connection">
               <span className="status-dot" />
-              <span>{providers.join(' · ')} 연결 전</span>
+              <span>{connectionSummary}</span>
             </div>
           </>
         ) : (
@@ -309,6 +356,11 @@ export default function App() {
             </strong>
           </div>
           <div className="topbar-right">
+            {project?.desktopId && providers.includes('Codex') && (
+              <Button variant="ghost" onClick={() => setShowAI(true)} icon="code">
+                AI 대화
+              </Button>
+            )}
             <Badge>화면 프로토타입</Badge>
             <button
               type="button"
@@ -350,6 +402,9 @@ export default function App() {
             )}
             {!inWorkspace && step === 1 && (
               <ConnectionPage
+                connectionSummary={connectionSummary}
+                actualProject={Boolean(project?.desktopId)}
+                onOpenAI={() => setShowAI(true)}
                 providers={providers}
                 onToggleProvider={(provider) => {
                   setProviders((selected) =>
@@ -373,7 +428,9 @@ export default function App() {
                   addActivity(
                     'settings',
                     'AI 도구 선택',
-                    `선택한 AI: ${providers.join(', ')}. 실제 연결은 아직 하지 않았어요.`,
+                    aiStatus.id
+                      ? `선택한 AI: ${providers.join(', ')}. Codex 실행 상태: ${aiLabels[aiStatus.state]}.`
+                      : `선택한 AI: ${providers.join(', ')}. 실제 연결은 아직 하지 않았어요.`,
                   );
                   setStep(2);
                 }}
@@ -463,6 +520,11 @@ export default function App() {
           <Icon name="check" size={17} />
           {toast}
         </div>
+      )}
+      {showAI && project && (
+        <Suspense fallback={<span role="status">AI 대화 화면을 여는 중이에요.</span>}>
+          <AIConsole project={project} onClose={() => setShowAI(false)} />
+        </Suspense>
       )}
       {editing && (
         <FeatureEditor

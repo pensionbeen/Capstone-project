@@ -2421,3 +2421,84 @@ progress::-webkit-progress-value {
     scroll-behavior: auto !important;
   }
 }
+/* The conversation stays focused on one message; process ownership is in main. */
+.modal.drawer:has(.ai-console) {
+  width: min(980px, 100vw);
+}
+.ai-console {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.ai-console-heading,
+.ai-availability,
+.ai-composer-actions,
+.connection-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.ai-console-heading p,
+.connection-action p {
+  margin: 6px 0 0;
+  color: var(--text-secondary, #647084);
+  font-size: 13px;
+}
+.ai-availability {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.ai-availability .button {
+  flex-shrink: 0;
+}
+.ai-run-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #647084;
+}
+.status-dot.running {
+  background: #2864ef;
+}
+.ai-terminal {
+  height: clamp(180px, 30vh, 300px);
+  min-width: 0;
+  padding: 12px;
+  border-radius: 10px;
+  background: #f7f8fa;
+  overflow: hidden;
+}
+.ai-terminal .xterm {
+  height: 100%;
+}
+.ai-composer textarea {
+  min-height: 72px;
+}
+.ai-composer-actions {
+  margin-top: 12px;
+}
+.ai-console .advanced p {
+  color: #647084;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.connection-action {
+  padding: 0 0 20px;
+}
+@media (max-width: 600px) {
+  .ai-availability,
+  .ai-composer-actions,
+  .connection-action {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .ai-terminal {
+    height: 180px;
+  }
+  .ai-console-heading {
+    align-items: flex-start;
+  }
+}

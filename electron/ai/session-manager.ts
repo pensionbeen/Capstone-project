@@ -1,0 +1,395 @@
+import { type ChildProcess, spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { type AIReply, type AISnapshot, activeAIStates, emptyAISnapshot } from '../../shared/ai.js';
+import { inspectDirectory } from '../policy.js';
+import { codexArguments, inspectCodex, installedCodex } from './codex.js';
+import { OutputBuffer, promptIsValid, rejected, sizeIsValid, UUID } from './contracts.js';
+import { ProcessAudit, type ProcessIdentity, processSnapshot } from './process-audit.js';
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+interface Driver {
+  file: string;
+  args: string[];
+  inspectHeader: boolean;
+}
+interface Dependencies {
+  prepare?: (cwd: string, prompt: string, conversation?: string) => Promise<Driver>;
+  snapshot?: () => Promise<ProcessIdentity[]>;
+  hostExecutable?: string;
+}
+const messages: Record<string, string> = {
+  OUTPUT_LIMIT: '출력 한도를 넘어 실행을 중단했어요. 요청을 작게 나누어 주세요.',
+  HEADER_CONFIG_MISMATCH: '요청한 Codex 실행 설정과 실제 표시가 달라 실행을 중단했어요.',
+  HEADER_UNCONFIRMED: 'Codex 실행 설정을 확인하지 못해 실행을 중단했어요.',
+  SESSION_TIMEOUT: '실행 시간 한도에 도달해 중단했어요. 요청을 작게 나누어 주세요.',
+  LOGIN_NOT_READY: 'Codex 설치·로그인 상태를 다시 확인해 주세요.',
+  PROJECT_UNAVAILABLE: '선택한 프로젝트 폴더를 열 수 없어요. 폴더를 다시 선택해 주세요.',
+};
+
+export class SessionManager {
+  private projects = new Map<string, string>();
+  private projectId: string | null = null;
+  private state = { ...emptyAISnapshot };
+  private output = new OutputBuffer();
+  private conversation?: string;
+  private host?: ChildProcess;
+  private lifetime?: Promise<void>;
+  private stopRequested = false;
+  private shutdownRequested = false;
+  private cols = 100;
+  private rows = 28;
+  private lastResize = 0;
+  private resizeTimer?: ReturnType<typeof setTimeout>;
+  diagnostic: { reason: string | null; owned: ProcessIdentity[] } = { reason: null, owned: [] };
+  private lastStatus = 0;
+  private availability?: ReturnType<typeof inspectCodex>;
+  private availabilityPending = false;
+  private probeCleanupUnconfirmed = false;
+  private availabilityAbort?: AbortController;
+  private readonly dependencies: Dependencies;
+
+  constructor(dependencies: Dependencies = {}) {
+    this.dependencies = dependencies;
+  }
+  get busy() {
+    return activeAIStates.includes(this.state.state);
+  }
+
+  registerProject(path: string) {
+    if (this.busy || this.shutdownRequested) return null;
+    for (const [id, existing] of this.projects) if (existing === path) return id;
+    const id = randomUUID();
+    this.projects.set(id, path);
+    if (this.projects.size > 16) {
+      const old = [...this.projects.keys()].find((key) => key !== this.projectId && key !== id);
+      if (old) this.projects.delete(old);
+    }
+    return id;
+  }
+  availabilityStatus() {
+    if (this.probeCleanupUnconfirmed)
+      return Promise.resolve({
+        status: 'error' as const,
+        cleanupUnconfirmed: true,
+        message: '이전 로그인 확인의 종료가 확인되지 않아 새 조회를 차단했어요.',
+      });
+    if (this.shutdownRequested)
+      return Promise.resolve({ status: 'error' as const, message: '앱 실행을 정리하고 있어요.' });
+    if (!this.availability || (!this.availabilityPending && Date.now() - this.lastStatus > 5000)) {
+      this.lastStatus = Date.now();
+      this.availabilityPending = true;
+      this.availabilityAbort = new AbortController();
+      this.availability = inspectCodex(this.availabilityAbort.signal)
+        .then((result) => {
+          if (result.cleanupUnconfirmed) {
+            this.probeCleanupUnconfirmed = true;
+            this.state.cleanupConfirmed = false;
+            if (this.busy && this.projectId) this.stop(this.projectId);
+            else {
+              this.state.state = 'error';
+              this.state.message = result.message;
+            }
+          }
+          return result;
+        })
+        .finally(() => {
+          this.availabilityPending = false;
+        });
+    }
+    return this.availability;
+  }
+  read(projectId: string, after: number): AISnapshot {
+    if (projectId !== this.projectId) return { ...emptyAISnapshot, chunks: [] };
+    return {
+      ...this.state,
+      outputId: this.output.id,
+      chunks: this.output.read(after),
+      retainedBytes: this.output.bytes,
+      firstSequence: this.output.chunks[0]?.sequence ?? this.output.next,
+      nextSequence: this.output.next,
+      truncated: this.output.truncated,
+      conversationReady: Boolean(this.conversation) && this.state.cleanupConfirmed,
+    };
+  }
+  submit(projectId: string, prompt: string): AIReply {
+    const cwd = this.projects.get(projectId);
+    if (!cwd) return rejected('앱에서 실제 프로젝트 폴더를 선택해 주세요.');
+    if (!promptIsValid(prompt)) return rejected('메시지를 1~8,000자로 입력해 주세요.');
+    if (this.shutdownRequested || this.busy)
+      return rejected('현재 실행을 중단하거나 끝난 뒤 메시지를 보내 주세요.');
+    if (!this.state.cleanupConfirmed)
+      return rejected(
+        '이전 실행의 정리가 확인되지 않아 새 실행을 막았어요. 앱을 닫기 전에 실행 상태를 확인해 주세요.',
+      );
+    if (this.projectId !== projectId) {
+      this.output = new OutputBuffer();
+      this.conversation = undefined;
+    }
+    this.projectId = projectId;
+    this.stopRequested = false;
+    this.state = {
+      ...emptyAISnapshot,
+      id: randomUUID(),
+      state: 'starting',
+      message: 'Codex 실행을 준비하고 있어요.',
+      cleanupConfirmed: false,
+    };
+    this.lifetime = this.run(cwd, prompt);
+    return { ok: true };
+  }
+  stop(projectId: string): AIReply {
+    if (projectId !== this.projectId || !this.busy)
+      return rejected('현재 실행 중인 대화가 없어요.');
+    this.stopRequested = true;
+    this.state.state = 'stopping';
+    this.state.message = '중단 요청을 보냈어요. 로컬 실행이 정리되는지 확인하고 있어요.';
+    this.send({ type: 'stop' });
+    return { ok: true };
+  }
+  reset(projectId: string): AIReply {
+    if (this.busy || !this.state.cleanupConfirmed)
+      return rejected('실행이 정리된 뒤 새 대화를 시작해 주세요.');
+    if (!this.projects.has(projectId)) return rejected('프로젝트를 다시 선택해 주세요.');
+    this.projectId = projectId;
+    this.conversation = undefined;
+    this.output = new OutputBuffer();
+    this.state = { ...emptyAISnapshot };
+    return { ok: true };
+  }
+  resize(projectId: string, cols: number, rows: number): AIReply {
+    if (!this.projects.has(projectId) || !sizeIsValid(cols, rows))
+      return rejected('화면 크기를 확인할 수 없어요.');
+    this.cols = cols;
+    this.rows = rows;
+    clearTimeout(this.resizeTimer);
+    this.resizeTimer = setTimeout(
+      () => {
+        this.lastResize = Date.now();
+        if (projectId === this.projectId)
+          this.send({ type: 'resize', cols: this.cols, rows: this.rows });
+      },
+      Math.max(0, 100 - (Date.now() - this.lastResize)),
+    );
+    return { ok: true };
+  }
+  async shutdown() {
+    this.shutdownRequested = true;
+    clearTimeout(this.resizeTimer);
+    this.availabilityAbort?.abort();
+    if (this.projectId && this.busy) this.stop(this.projectId);
+    await this.lifetime;
+    await this.availability;
+    return this.state.cleanupConfirmed;
+  }
+  private send(message: object) {
+    if (this.host?.connected) this.host.send(message, () => {});
+  }
+
+  private async run(cwd: string, prompt: string) {
+    const snapshot = this.dependencies.snapshot ?? processSnapshot;
+    let audit: ProcessAudit | undefined;
+    let host: ChildProcess | undefined;
+    let closed = false;
+    let hostExited = false;
+    let ready = false;
+    let started = false;
+    let ptyPid: number | undefined;
+    let result: { code: number | null; outputDrained: boolean } | undefined;
+    let failure: string | undefined;
+    let stopAt = 0;
+    let outputBytes = 0;
+    let diagnosticBytes = 0;
+    let ownerDisposed = false;
+    const fail = (reason: string) => {
+      failure ||= reason;
+    };
+    try {
+      if ((await inspectDirectory(cwd)).status !== 'selected')
+        throw new Error('PROJECT_UNAVAILABLE');
+      if (this.stopRequested) return;
+      const driver = this.dependencies.prepare
+        ? await this.dependencies.prepare(cwd, prompt, this.conversation)
+        : await (async () => {
+            if ((await this.availabilityStatus()).status !== 'ready')
+              throw new Error('LOGIN_NOT_READY');
+            return {
+              file: await installedCodex(),
+              args: codexArguments(cwd, prompt, this.conversation),
+              inspectHeader: true,
+            };
+          })();
+      if (this.stopRequested) return;
+      const baseline = await snapshot();
+      if (this.stopRequested) return;
+      host = spawn(
+        this.dependencies.hostExecutable ?? process.execPath,
+        [fileURLToPath(new URL('./pty-host.js', import.meta.url))],
+        {
+          cwd,
+          windowsHide: true,
+          env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+          stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        },
+      );
+      this.host = host;
+      host.once('error', () => fail('HOST_START_FAILED'));
+      host.once('exit', () => {
+        hostExited = true;
+      });
+      host.once('close', () => {
+        closed = true;
+      });
+      if (!host.pid) throw new Error('HOST_START_FAILED');
+      audit = new ProcessAudit(baseline, host.pid, process.pid);
+      const unexpectedOutput = (data: Buffer) => {
+        diagnosticBytes += data.length;
+        fail('HOST_DIAGNOSTIC');
+        if (diagnosticBytes > 65536) this.send({ type: 'stop' });
+      };
+      host.stdout?.on('data', unexpectedOutput);
+      host.stderr?.on('data', unexpectedOutput);
+      host.on('message', (message: unknown) => {
+        if (!message || typeof message !== 'object' || !('type' in message)) {
+          fail('HOST_PROTOCOL');
+          return;
+        }
+        const data = message as Record<string, unknown>;
+        if (data.type === 'ready' && !ready) ready = true;
+        else if (data.type === 'started' && started && !ptyPid && Number.isSafeInteger(data.pid)) {
+          ptyPid = Number(data.pid);
+          if (!this.stopRequested) {
+            this.state.state = 'running';
+            this.state.message = 'Codex가 실행 중이에요. 출력이 없어도 실행 상태를 유지해요.';
+          }
+        } else if (
+          data.type === 'output' &&
+          started &&
+          typeof data.data === 'string' &&
+          data.data.length <= 4096 &&
+          sizeIsValid(data.cols, data.rows)
+        ) {
+          outputBytes += Buffer.byteLength(data.data);
+          if (outputBytes > 9 * 1024 * 1024) fail('OUTPUT_LIMIT');
+          else this.output.append(data.data, Number(data.cols), Number(data.rows));
+          this.send({ type: 'ack', bytes: Buffer.byteLength(data.data) });
+        } else if (
+          data.type === 'header' &&
+          typeof data.conversation === 'string' &&
+          UUID.test(data.conversation)
+        ) {
+          if (this.conversation && this.conversation !== data.conversation)
+            fail('CONVERSATION_MISMATCH');
+          else this.conversation = data.conversation;
+        } else if (
+          data.type === 'exit' &&
+          !result &&
+          (data.code === null || Number.isInteger(data.code))
+        ) {
+          result = {
+            code: data.code as number | null,
+            outputDrained: data.outputDrained === true || data.cancelledBeforeStart === true,
+          };
+          if (typeof data.reason === 'string') fail(data.reason);
+        } else if (data.type === 'fault')
+          fail(typeof data.reason === 'string' ? data.reason : 'HOST_FAULT');
+        else fail('HOST_PROTOCOL');
+      });
+      const deadline = Date.now() + 10 * 60 * 1000;
+      const startupDeadline = Date.now() + 30000;
+      while (!result) {
+        if (hostExited || closed) throw new Error('HOST_EXITED_EARLY');
+        audit.observe(await snapshot());
+        if (audit.uncertain) fail('PROCESS_OWNERSHIP_UNCONFIRMED');
+        if (ready && !started && !this.stopRequested && !failure) {
+          started = true;
+          this.send({ type: 'start', ...driver, cwd, cols: this.cols, rows: this.rows });
+        }
+        if (!ptyPid && Date.now() > startupDeadline) fail('HOST_START_TIMEOUT');
+        if (Date.now() > deadline) fail('SESSION_TIMEOUT');
+        if ((failure || this.stopRequested) && !stopAt) {
+          stopAt = Date.now();
+          this.state.state = 'stopping';
+          this.send({ type: 'stop' });
+        }
+        if (stopAt && Date.now() - stopAt > 11000)
+          throw new Error(failure ?? 'PTY_EXIT_UNCONFIRMED');
+        await sleep(250);
+      }
+      audit.observe(await snapshot());
+      if (!result.outputDrained) fail('OUTPUT_DRAIN_UNCONFIRMED');
+      if (ptyPid && !audit.observed(ptyPid)) fail('PTY_IDENTITY_UNCONFIRMED');
+    } catch (error) {
+      fail(error instanceof Error ? error.message : 'SESSION_FAILED');
+      this.send({ type: 'stop' });
+      if (host && !result && !hostExited) {
+        const deadline = Date.now() + 5000;
+        while (!result && !hostExited && Date.now() < deadline) await sleep(100);
+      }
+    } finally {
+      let cleanup = !host;
+      if (host) {
+        // Only our live ChildProcess handle is terminated; never a process name or arbitrary PID.
+        if (!hostExited && host.pid) {
+          try {
+            ownerDisposed = host.kill();
+          } catch {
+            fail('HOST_DISPOSE_FAILED');
+          }
+        }
+        const closeDeadline = Date.now() + 4000;
+        while (!closed && Date.now() < closeDeadline) await sleep(100);
+        if (!closed || (!hostExited && host.pid)) fail('HOST_CLOSE_UNCONFIRMED');
+        if (!host.pid && closed) cleanup = true;
+        if (audit) {
+          const deadline = Date.now() + 5000;
+          try {
+            do {
+              audit.observe(await snapshot());
+              if (!audit.uncertain && audit.alive().length === 0) {
+                cleanup = true;
+                break;
+              }
+              await sleep(200);
+            } while (Date.now() < deadline);
+          } catch {
+            fail('PROCESS_AUDIT_FAILED');
+          }
+        }
+        if (!ownerDisposed && !hostExited && host.pid) cleanup = false;
+        host.stdout?.destroy();
+        host.stderr?.destroy();
+        if (!closed) {
+          host.unref();
+          host.channel?.unref();
+        }
+      }
+      this.host = undefined;
+      this.diagnostic = { reason: failure ?? null, owned: [...(audit?.owned.values() ?? [])] };
+      this.state.cleanupConfirmed = cleanup && (!host || closed) && !this.probeCleanupUnconfirmed;
+      this.state.exitCode = result?.code ?? null;
+      if (!this.state.cleanupConfirmed) {
+        this.state.state = 'error';
+        this.state.message =
+          '실행 정리가 확인되지 않았어요. 새 실행을 차단했어요. 앱 종료 안내를 따라 주세요.';
+        this.conversation = undefined;
+      } else if (failure) {
+        this.state.state = 'error';
+        this.state.message =
+          messages[failure] ??
+          '실행을 마치지 못했어요. 로컬 프로세스는 정리했어요. 출력을 확인한 뒤 다시 시도해 주세요.';
+        if (failure.includes('HEADER') || failure.includes('CONVERSATION'))
+          this.conversation = undefined;
+      } else if (this.stopRequested) {
+        this.state.state = 'interrupted';
+        this.state.message = '로컬 실행을 중단하고 정리했어요. 대화를 이어서 보낼 수 있어요.';
+      } else {
+        this.state.state = result?.code === 0 ? 'exited' : 'error';
+        this.state.message =
+          result?.code === 0
+            ? '실행이 끝났어요. 결과를 확인하고 다음 메시지를 보내세요.'
+            : 'Codex가 오류로 종료됐어요. 아래 출력을 확인해 주세요. 로컬 프로세스는 정리했어요.';
+      }
+    }
+  }
+}

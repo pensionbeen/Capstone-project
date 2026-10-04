@@ -17,12 +17,18 @@
     "build": "npm run typecheck && npm run build:electron && vite build",
     "start": "electron .",
     "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
-    "test": "node --test tests/model.test.ts tests/desktop.test.ts",
+    "test": "npm run build:electron && node --test tests/model.test.ts tests/desktop.test.ts tests/ai.test.ts",
+    "test:ai-runtime": "npm run build:electron && node --test tests/ai-runtime.test.ts",
+    "test:ai-live": "node scripts/test-ai-live.mjs",
     "test:ui": "playwright test",
     "lint": "biome check .",
     "format": "biome format --write ."
   },
   "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/headless": "6.0.0",
+    "@xterm/xterm": "6.0.0",
+    "node-pty": "1.1.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
