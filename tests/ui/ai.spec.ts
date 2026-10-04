@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -19,7 +20,7 @@ test.beforeEach(async () => {
     ),
   ) as Record<string, string>;
   app = await _electron.launch({
-    args: ['.', `--user-data-dir=${resolve('.runtime', 'ai-ui-profile')}`],
+    args: ['.', `--user-data-dir=${resolve('.runtime', `ai-ui-${randomUUID()}`)}`],
     env,
   });
   page = await app.firstWindow();
@@ -227,7 +228,7 @@ test('앱 내부 연결 끊김·다시 연결과 실패한 화면 크기 재적�
     )
     .toBe(true);
   const projects = await page.evaluate(() => window.desktop?.listProjects());
-  expect(projects?.storage).toBe('memory');
+  expect(projects?.storage).toBe('sqlite');
   expect(projects?.projects).toHaveLength(1);
 });
 

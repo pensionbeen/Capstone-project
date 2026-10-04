@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
@@ -12,11 +13,13 @@ import {
 } from 'electron';
 import { emptyAISnapshot } from '../shared/ai.js';
 import type { FolderResult } from '../shared/desktop.js';
+import type { ProjectCatalog, ProjectResult, StorageResult } from '../shared/storage.js';
 import { promptIsValid, rejected, sizeIsValid, UUID } from './ai/contracts.js';
 import { SessionManager } from './ai/session-manager.js';
 import { LocalApiClient } from './local-api/client.js';
 import { startLocalApi } from './local-api/server.js';
 import { APP_URL, DEV_URL, inspectDirectory, isTrustedPage, staticAssetPath } from './policy.js';
+import { ProjectStore, storageMessage, validProjectName } from './storage/project-store.js';
 
 const currentDirectory = fileURLToPath(new URL('.', import.meta.url));
 const development = !app.isPackaged && process.argv.includes('--dev');
@@ -28,6 +31,41 @@ let closing: Promise<void> | undefined;
 export const aiSession = new SessionManager();
 let localApi: Awaited<ReturnType<typeof startLocalApi>> | undefined;
 let apiClient: LocalApiClient | undefined;
+let projectStore: ProjectStore | undefined;
+let storageFailure = '';
+const pendingFolders = new Map<string, string>();
+let pendingAIChanges = 0;
+function changingAI<T>(operation: () => Promise<T> | undefined) {
+  pendingAIChanges++;
+  return Promise.resolve()
+    .then(operation)
+    .finally(() => {
+      pendingAIChanges--;
+    });
+}
+function projectCatalog(): ProjectCatalog {
+  return (
+    projectStore?.catalog() ?? {
+      projects: [],
+      activeProjectId: null,
+      storage: 'unavailable',
+      message: storageFailure,
+    }
+  );
+}
+function syncProjects(resetSession = false) {
+  aiSession.replaceProjects(projectCatalog().projects, resetSession);
+}
+function mayChangeProjects() {
+  return (
+    projectStore &&
+    !selecting &&
+    !closing &&
+    !allowExit &&
+    pendingAIChanges === 0 &&
+    aiSession.canChangeProjects
+  );
+}
 
 function trusted(event: IpcMainInvokeEvent) {
   return (
@@ -63,6 +101,7 @@ async function closeApplication() {
     }
     apiClient?.close();
     await localApi?.close();
+    projectStore?.close();
     allowExit = true;
     app.quit();
   })().finally(() => {
@@ -72,6 +111,14 @@ async function closeApplication() {
 }
 
 app.setName('ORBIT');
+if (!app.requestSingleInstanceLock()) {
+  allowExit = true;
+  app.quit();
+}
+app.on('second-instance', () => {
+  mainWindow?.restore();
+  mainWindow?.focus();
+});
 protocol.registerSchemesAsPrivileged([
   { scheme: 'orbit', privileges: { standard: true, secure: true, supportFetchAPI: true } },
 ]);
@@ -114,10 +161,18 @@ function createWindow() {
 }
 
 void app.whenReady().then(async () => {
+  if (allowExit) return;
+  try {
+    projectStore = new ProjectStore(join(app.getPath('userData'), 'orbit-data'));
+    syncProjects();
+  } catch (error) {
+    storageFailure = `프로젝트 저장을 열지 못했어요. ${storageMessage(error)}`;
+  }
   try {
     localApi = await startLocalApi(
       aiSession,
       development ? 'http://127.0.0.1:5173' : 'orbit://app',
+      projectCatalog,
     );
     apiClient = new LocalApiClient(localApi.endpoint);
   } catch {
@@ -156,7 +211,8 @@ void app.whenReady().then(async () => {
       }
       if (selecting)
         return { status: 'error', message: '이미 열린 폴더 선택 창을 먼저 닫아 주세요.' };
-      if (aiSession.busy)
+      if (!projectStore) return { status: 'error', message: storageFailure };
+      if (!mayChangeProjects())
         return {
           status: 'error',
           message: 'AI 실행을 중단하고 정리가 끝난 뒤 프로젝트를 변경해 주세요.',
@@ -171,15 +227,17 @@ void app.whenReady().then(async () => {
         if (result.canceled) return { status: 'cancelled' };
         const selected = await inspectDirectory(result.filePaths[0]);
         if (selected.status !== 'selected') return selected;
-        const projectId = aiSession.registerProject(selected.path);
-        if (!projectId || !apiClient)
+        if (closing || allowExit || !aiSession.canChangeProjects)
           return { status: 'error', message: 'AI 실행을 정리한 뒤 폴더를 다시 선택해 주세요.' };
-        const project = await apiClient.project(projectId);
+        const projectId = randomUUID();
+        if (pendingFolders.size >= 16)
+          pendingFolders.delete(pendingFolders.keys().next().value as string);
+        pendingFolders.set(projectId, selected.path);
         return {
           status: 'selected',
-          projectId: project.id,
-          name: project.name,
-          path: project.path,
+          projectId,
+          name: selected.name,
+          path: selected.path,
         };
       } catch {
         return {
@@ -196,6 +254,93 @@ void app.whenReady().then(async () => {
     if (!trusted(event) || args.length !== 0 || !apiClient)
       throw new Error('프로젝트를 조회할 수 없어요.');
     return apiClient.listProjects();
+  });
+  for (const action of ['activate', 'save-name'] as const) {
+    ipcMain.handle(`project:${action}`, (event, ...args: unknown[]): ProjectResult => {
+      const [id, name] = args;
+      if (
+        !trusted(event) ||
+        args.length !== (action === 'activate' ? 1 : 2) ||
+        !projectArgument(id) ||
+        (action === 'save-name' && !validProjectName(name))
+      )
+        return { ok: false, message: '프로젝트 선택과 이름을 확인해 주세요.' };
+      if (!mayChangeProjects() || !projectStore)
+        return {
+          ok: false,
+          message: storageFailure || 'AI 실행을 중단하고 정리가 끝난 뒤 프로젝트를 변경해 주세요.',
+        };
+      try {
+        const candidate = action === 'activate' ? pendingFolders.get(id) : undefined;
+        const project = candidate
+          ? projectStore.register(candidate, true)
+          : projectStore.activate(id, action === 'save-name' ? (name as string) : undefined);
+        pendingFolders.delete(id);
+        syncProjects();
+        return { ok: true, project };
+      } catch (error) {
+        return { ok: false, message: storageMessage(error) };
+      }
+    });
+  }
+  ipcMain.handle('storage:list-backups', (event, ...args: unknown[]) => {
+    if (!trusted(event) || args.length !== 0 || !projectStore)
+      throw new Error('백업 목록을 열 수 없어요.');
+    return { backups: projectStore.backups(), directory: join(projectStore.directory, 'backups') };
+  });
+  ipcMain.handle('storage:backup', (event, ...args: unknown[]): StorageResult => {
+    if (!trusted(event) || args.length !== 0 || !mayChangeProjects() || !projectStore)
+      return { ok: false, message: 'AI 실행을 정리하고 저장 상태를 확인한 뒤 백업해 주세요.' };
+    try {
+      projectStore.backup();
+      return { ok: true, message: '프로젝트 목록과 마지막 선택을 백업했어요.' };
+    } catch (error) {
+      return { ok: false, message: storageMessage(error) };
+    }
+  });
+  ipcMain.handle('storage:restore', async (event, ...args: unknown[]): Promise<StorageResult> => {
+    const [id] = args;
+    if (
+      !trusted(event) ||
+      args.length !== 1 ||
+      !projectArgument(id) ||
+      !mayChangeProjects() ||
+      !projectStore ||
+      !mainWindow
+    )
+      return { ok: false, message: 'AI 실행을 정리하고 백업을 다시 선택해 주세요.' };
+    selecting = true;
+    try {
+      if (!projectStore.backups().some((b) => b.id === id))
+        return { ok: false, message: '백업을 찾지 못했어요.' };
+      const answer = await dialog.showMessageBox(mainWindow, {
+        type: 'warning',
+        title: '프로젝트 목록 복원',
+        message: '백업 시점의 프로젝트 목록과 마지막 선택으로 돌아갈까요?',
+        detail:
+          '현재 목록을 먼저 백업해요. 이 창의 저장되지 않은 요구분석·기능·검증·대화 표시는 초기화돼요. 프로젝트 폴더의 파일은 변경하지 않아요.',
+        buttons: ['취소', '백업으로 복원'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      if (answer.response !== 1)
+        return { ok: false, message: '복원을 취소했어요. 현재 목록을 유지해요.' };
+      if (closing || allowExit || !aiSession.canChangeProjects)
+        return { ok: false, message: '앱 실행을 정리한 뒤 다시 시도해 주세요.' };
+      projectStore.restore(id);
+      syncProjects(true);
+      pendingFolders.clear();
+      return {
+        ok: true,
+        message: '프로젝트 목록을 복원했어요. AI는 자동으로 실행하지 않아요.',
+        catalog: projectStore.catalog(),
+      };
+    } catch (error) {
+      return { ok: false, message: storageMessage(error) };
+    } finally {
+      selecting = false;
+    }
   });
   ipcMain.handle('ai:status', (event, ...args: unknown[]) => {
     const [id] = args;
@@ -223,7 +368,9 @@ void app.whenReady().then(async () => {
       !promptIsValid(prompt)
     )
       return rejected('프로젝트와 메시지를 확인해 주세요.');
-    return apiClient?.command(id, 'submit', { prompt, expectedOutputId, expectedRunId });
+    return changingAI(() =>
+      apiClient?.command(id, 'submit', { prompt, expectedOutputId, expectedRunId }),
+    );
   });
   ipcMain.handle('ai:reconnect', (event, ...args: unknown[]) => {
     if (!trusted(event) || args.length !== 0) return rejected('연결을 확인할 수 없어요.');
@@ -263,12 +410,14 @@ void app.whenReady().then(async () => {
         !(projectArgument(expectedId) || (action === 'reset' && expectedId === null))
       )
         return rejected('대화를 확인할 수 없어요.');
-      return apiClient?.command(
-        id,
-        action,
-        action === 'stop'
-          ? { expectedRunId: expectedId }
-          : { expectedOutputId: expectedId, expectedRunId },
+      return changingAI(() =>
+        apiClient?.command(
+          id,
+          action,
+          action === 'stop'
+            ? { expectedRunId: expectedId }
+            : { expectedOutputId: expectedId, expectedRunId },
+        ),
       );
     });
   }

@@ -240,11 +240,13 @@ export function Modal({
   children,
   onClose,
   drawer = false,
+  busy = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   drawer?: boolean;
+  busy?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -260,14 +262,23 @@ export function Modal({
       ref={ref}
       className={drawer ? 'modal drawer' : 'modal'}
       aria-labelledby={titleId}
-      onCancel={onClose}
+      onCancel={(event) => {
+        event.preventDefault();
+        if (!busy) onClose();
+      }}
       onClose={(event) => {
-        if (!event.currentTarget.open) onClose();
+        if (!event.currentTarget.open && !busy) onClose();
       }}
     >
       <header className="modal-header">
         <h2 id={titleId}>{title}</h2>
-        <button type="button" className="icon-button" aria-label="닫기" onClick={onClose}>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="닫기"
+          disabled={busy}
+          onClick={onClose}
+        >
           <Icon name="close" />
         </button>
       </header>

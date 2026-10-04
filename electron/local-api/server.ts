@@ -4,6 +4,7 @@ import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import type { AIReply } from '../../shared/ai.js';
 import type { ApiResult, SessionEvent, SessionRead } from '../../shared/local-api.js';
+import type { ProjectCatalog } from '../../shared/storage.js';
 import { UUID } from '../ai/contracts.js';
 import type { SessionManager } from '../ai/session-manager.js';
 
@@ -47,7 +48,11 @@ export type SessionBackend = Pick<
   | 'reset'
   | 'resize'
 >;
-export async function startLocalApi(manager: SessionBackend, origin: string) {
+export async function startLocalApi(
+  manager: SessionBackend,
+  origin: string,
+  catalog?: () => ProjectCatalog,
+) {
   const token = randomBytes(32).toString('hex');
   const expectedAuth = Buffer.from(`Bearer ${token}`);
   let closing = false;
@@ -166,7 +171,12 @@ export async function startLocalApi(manager: SessionBackend, origin: string) {
       .send(failure(request.id, new ApiError(404, 'NOT_FOUND', '요청한 기능을 찾지 못했어요.'))),
   );
   app.get('/v1/projects', async (request) =>
-    result(request, { projects: manager.listProjects(), storage: 'memory' }),
+    result(
+      request,
+      catalog
+        ? catalog()
+        : { projects: manager.listProjects(), storage: 'memory', activeProjectId: null },
+    ),
   );
   app.get<{ Params: { id: string } }>(
     '/v1/projects/:id',

@@ -9,6 +9,7 @@ import type {
   SessionEvent,
   SessionRead,
 } from '../../shared/local-api.js';
+import type { ProjectCatalog } from '../../shared/storage.js';
 import { ApiError, type LocalEndpoint } from './server.js';
 
 const disconnected = () =>
@@ -138,7 +139,7 @@ export class LocalApiClient {
     });
   }
   listProjects() {
-    return this.http<{ projects: LocalProject[]; storage: 'memory' }>('/v1/projects');
+    return this.http<ProjectCatalog>('/v1/projects');
   }
   project(id: string) {
     return this.http<LocalProject>(`/v1/projects/${id}`);

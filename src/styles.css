@@ -2502,3 +2502,58 @@ progress::-webkit-progress-value {
     align-items: flex-start;
   }
 }
+/* Persisted project selection and bounded local backup list. */
+.project-storage {
+  margin: 20px 0;
+}
+.project-storage > .field-hint {
+  display: block;
+  margin-bottom: 14px;
+  line-height: 1.7;
+}
+.saved-projects {
+  margin: 14px 0;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+}
+.saved-projects summary {
+  padding: 14px 0;
+  cursor: pointer;
+  font-size: 14px;
+}
+.saved-projects ul,
+.backup-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+}
+.saved-projects li,
+.backup-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid #edf0f3;
+}
+.saved-projects li > div {
+  min-width: 0;
+}
+.saved-projects strong,
+.saved-projects span {
+  display: block;
+  font-size: 13px;
+}
+.saved-projects span {
+  color: #6b7280;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 4px;
+}
+.backup-list {
+  margin-top: 18px;
+  font-size: 13px;
+}

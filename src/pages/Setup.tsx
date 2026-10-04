@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import type { ProjectCatalog } from '../../shared/storage';
+import { ProjectStorage } from '../components/ProjectStorage';
 import { ProtectionEditor } from '../components/ProtectionEditor';
 import { Badge, Button, Icon, Notice, PageHeading } from '../components/ui';
 import type { Feature, Project, ProtectionDraft, Provider } from '../model';
@@ -9,11 +11,17 @@ export function ProjectPage({
   onSelect,
   onName,
   onNext,
+  catalog,
+  loading,
+  onRestored,
 }: {
   project: Project | null;
   onSelect: (project: Project) => void;
   onName: (name: string) => void;
   onNext: () => void;
+  catalog: ProjectCatalog;
+  loading: boolean;
+  onRestored: (catalog: ProjectCatalog) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -60,7 +68,11 @@ export function ProjectPage({
             : '내 컴퓨터의 프로젝트 폴더를 연결해 시작할 수 있어요.'}
         </p>
         {!project && (
-          <Button onClick={selectFolder} disabled={busy} icon="plus">
+          <Button
+            onClick={selectFolder}
+            disabled={busy || loading || catalog.storage === 'unavailable'}
+            icon="plus"
+          >
             {busy
               ? '폴더 선택 창 여는 중'
               : window.desktop
@@ -76,7 +88,12 @@ export function ProjectPage({
                 <strong>{project.name || '프로젝트'}</strong>
                 <span title={project.path}>{project.path}</span>
               </div>
-              <button type="button" className="text-button" onClick={selectFolder} disabled={busy}>
+              <button
+                type="button"
+                className="text-button"
+                onClick={selectFolder}
+                disabled={busy || loading || catalog.storage === 'unavailable'}
+              >
                 폴더 변경
               </button>
             </div>
@@ -87,6 +104,7 @@ export function ProjectPage({
               id="project-name"
               value={project.name}
               maxLength={80}
+              disabled={loading}
               onChange={(event) => onName(event.target.value)}
               placeholder="프로젝트 이름을 입력해 주세요"
             />
@@ -101,6 +119,14 @@ export function ProjectPage({
           {message}
         </p>
       )}
+      {window.desktop && (
+        <ProjectStorage
+          catalog={catalog}
+          loading={loading || busy}
+          onSelect={onSelect}
+          onRestored={onRestored}
+        />
+      )}
       {!project ? (
         <div className="sample-row">
           <div className="sample-icon">
@@ -110,7 +136,12 @@ export function ProjectPage({
             <strong>먼저 가볍게 둘러보고 싶다면</strong>
             <p>할 일 관리 앱 예시로 전체 흐름을 살펴보세요.</p>
           </div>
-          <button type="button" className="text-button" onClick={() => onSelect(sampleProject)}>
+          <button
+            type="button"
+            className="text-button"
+            disabled={loading}
+            onClick={() => onSelect(sampleProject)}
+          >
             예시 열기
             <Icon name="arrow" size={16} />
           </button>
@@ -123,7 +154,7 @@ export function ProjectPage({
               ? '예시 데이터로 화면 흐름을 살펴봐요.'
               : '폴더 안의 파일을 자동으로 읽거나 변경하지 않아요.'}
           </p>
-          <Button onClick={onNext} disabled={!project.name.trim() || busy} icon="arrow">
+          <Button onClick={onNext} disabled={!project.name.trim() || busy || loading} icon="arrow">
             이 프로젝트로 시작
           </Button>
         </div>
