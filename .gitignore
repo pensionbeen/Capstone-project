@@ -54,6 +54,8 @@ coverage/
 .vite/
 .cache/
 *.tsbuildinfo
+test-results/
+playwright-report/
 tmp/
 temp/
 

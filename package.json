@@ -1,0 +1,39 @@
+{
+  "name": "capstone-orbit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "졸업작품 · 프로젝트와 AI 작업을 연결하는 데스크톱 프로토타입",
+  "main": "dist/desktop/electron/main.js",
+  "engines": {
+    "node": ">=24.15.0 <25"
+  },
+  "scripts": {
+    "setup:electron": "node node_modules/electron/install.js",
+    "dev": "npm run build:electron && node scripts/dev.mjs",
+    "dev:web": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
+    "build": "npm run typecheck && npm run build:electron && vite build",
+    "start": "electron .",
+    "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
+    "test": "node --test tests/model.test.ts tests/desktop.test.ts",
+    "test:ui": "playwright test",
+    "lint": "biome check .",
+    "format": "biome format --write ."
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.15",
+    "@playwright/test": "1.63.0",
+    "@types/node": "24.19.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "electron": "44.5.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.2"
+  }
+}
