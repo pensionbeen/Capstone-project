@@ -14,6 +14,8 @@ import { emptyAISnapshot } from '../shared/ai.js';
 import type { FolderResult } from '../shared/desktop.js';
 import { promptIsValid, rejected, sizeIsValid, UUID } from './ai/contracts.js';
 import { SessionManager } from './ai/session-manager.js';
+import { LocalApiClient } from './local-api/client.js';
+import { startLocalApi } from './local-api/server.js';
 import { APP_URL, DEV_URL, inspectDirectory, isTrustedPage, staticAssetPath } from './policy.js';
 
 const currentDirectory = fileURLToPath(new URL('.', import.meta.url));
@@ -24,6 +26,8 @@ let selecting = false;
 let allowExit = false;
 let closing: Promise<void> | undefined;
 export const aiSession = new SessionManager();
+let localApi: Awaited<ReturnType<typeof startLocalApi>> | undefined;
+let apiClient: LocalApiClient | undefined;
 
 function trusted(event: IpcMainInvokeEvent) {
   return (
@@ -41,6 +45,7 @@ function projectArgument(value: unknown): value is string {
 async function closeApplication() {
   if (closing) return closing;
   closing = (async () => {
+    localApi?.beginClose();
     const cleaned = await aiSession.shutdown();
     if (!cleaned && mainWindow && !mainWindow.isDestroyed()) {
       const answer = await dialog.showMessageBox(mainWindow, {
@@ -56,6 +61,8 @@ async function closeApplication() {
       });
       if (answer.response === 0) return;
     }
+    apiClient?.close();
+    await localApi?.close();
     allowExit = true;
     app.quit();
   })().finally(() => {
@@ -106,7 +113,22 @@ function createWindow() {
   void window.loadURL(trustedUrl);
 }
 
-void app.whenReady().then(() => {
+void app.whenReady().then(async () => {
+  try {
+    localApi = await startLocalApi(
+      aiSession,
+      development ? 'http://127.0.0.1:5173' : 'orbit://app',
+    );
+    apiClient = new LocalApiClient(localApi.endpoint);
+  } catch {
+    dialog.showErrorBox(
+      '앱 연결 시작 실패',
+      '앱 내부 연결을 시작하지 못했어요. ORBIT을 다시 실행해 주세요.',
+    );
+    allowExit = true;
+    app.quit();
+    return;
+  }
   session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) =>
     callback(false),
   );
@@ -150,9 +172,15 @@ void app.whenReady().then(() => {
         const selected = await inspectDirectory(result.filePaths[0]);
         if (selected.status !== 'selected') return selected;
         const projectId = aiSession.registerProject(selected.path);
-        return projectId
-          ? { ...selected, projectId }
-          : { status: 'error', message: 'AI 실행을 정리한 뒤 폴더를 다시 선택해 주세요.' };
+        if (!projectId || !apiClient)
+          return { status: 'error', message: 'AI 실행을 정리한 뒤 폴더를 다시 선택해 주세요.' };
+        const project = await apiClient.project(projectId);
+        return {
+          status: 'selected',
+          projectId: project.id,
+          name: project.name,
+          path: project.path,
+        };
       } catch {
         return {
           status: 'error',
@@ -164,47 +192,84 @@ void app.whenReady().then(() => {
     },
   );
 
+  ipcMain.handle('project:list', (event, ...args: unknown[]) => {
+    if (!trusted(event) || args.length !== 0 || !apiClient)
+      throw new Error('프로젝트를 조회할 수 없어요.');
+    return apiClient.listProjects();
+  });
+  ipcMain.handle('ai:status', (event, ...args: unknown[]) => {
+    const [id] = args;
+    if (!trusted(event) || args.length !== 1 || !projectArgument(id) || !apiClient)
+      throw new Error('대화 상태를 조회할 수 없어요.');
+    return apiClient.status(id);
+  });
+
   ipcMain.handle('ai:inspect', (event, ...args: unknown[]) =>
     trusted(event) && args.length === 0
-      ? aiSession.availabilityStatus()
+      ? apiClient
+          ?.availability()
+          .catch(() => ({ status: 'error', message: '앱 내부 연결을 확인해 주세요.' }))
       : { status: 'error', message: '이 화면에서는 AI 상태를 확인할 수 없어요.' },
   );
   ipcMain.handle('ai:submit', (event, ...args: unknown[]) => {
-    const [id, prompt] = args;
+    const [id, prompt, expectedOutputId, expectedRunId] = args;
     if (
       !trusted(event) ||
       selecting ||
-      args.length !== 2 ||
+      args.length !== 4 ||
+      !(expectedOutputId === null || projectArgument(expectedOutputId)) ||
+      !(expectedRunId === null || projectArgument(expectedRunId)) ||
       !projectArgument(id) ||
       !promptIsValid(prompt)
     )
       return rejected('프로젝트와 메시지를 확인해 주세요.');
-    return aiSession.submit(id, prompt);
+    return apiClient?.command(id, 'submit', { prompt, expectedOutputId, expectedRunId });
   });
-  ipcMain.handle('ai:read', (event, ...args: unknown[]) => {
-    const [id, after] = args;
+  ipcMain.handle('ai:reconnect', (event, ...args: unknown[]) => {
+    if (!trusted(event) || args.length !== 0) return rejected('연결을 확인할 수 없어요.');
+    return apiClient?.reconnect();
+  });
+  ipcMain.handle('ai:read', async (event, ...args: unknown[]) => {
+    const [id, after, outputId] = args;
     if (
       !trusted(event) ||
-      args.length !== 2 ||
+      args.length !== 3 ||
+      !(outputId === null || projectArgument(outputId)) ||
       !projectArgument(id) ||
       !Number.isSafeInteger(after) ||
       Number(after) < 0
     )
       return { ...emptyAISnapshot, state: 'error', message: '대화 상태를 조회할 수 없어요.' };
-    return aiSession.read(id, Number(after));
+    try {
+      return await apiClient?.readSession(id, Number(after), outputId);
+    } catch {
+      return apiClient?.readFailure();
+    }
   });
   ipcMain.handle('ai:resize', (event, ...args: unknown[]) => {
     const [id, cols, rows] = args;
     if (!trusted(event) || args.length !== 3 || !projectArgument(id) || !sizeIsValid(cols, rows))
       return rejected('화면 크기를 확인할 수 없어요.');
-    return aiSession.resize(id, Number(cols), Number(rows));
+    return apiClient?.command(id, 'resize', { cols, rows });
   });
   for (const action of ['stop', 'reset'] as const) {
     ipcMain.handle(`ai:${action}`, (event, ...args: unknown[]) => {
-      const [id] = args;
-      if (!trusted(event) || args.length !== 1 || !projectArgument(id))
+      const [id, expectedId, expectedRunId] = args;
+      if (
+        !trusted(event) ||
+        args.length !== (action === 'stop' ? 2 : 3) ||
+        !projectArgument(id) ||
+        (action === 'reset' && !(expectedRunId === null || projectArgument(expectedRunId))) ||
+        !(projectArgument(expectedId) || (action === 'reset' && expectedId === null))
+      )
         return rejected('대화를 확인할 수 없어요.');
-      return aiSession[action](id);
+      return apiClient?.command(
+        id,
+        action,
+        action === 'stop'
+          ? { expectedRunId: expectedId }
+          : { expectedOutputId: expectedId, expectedRunId },
+      );
     });
   }
 

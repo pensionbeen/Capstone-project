@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { basename, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type AIReply, type AISnapshot, activeAIStates, emptyAISnapshot } from '../../shared/ai.js';
 import { inspectDirectory } from '../policy.js';
@@ -54,6 +55,18 @@ export class SessionManager {
   }
   get busy() {
     return activeAIStates.includes(this.state.state);
+  }
+
+  listProjects() {
+    return [...this.projects].map(([id, path]) => ({
+      id,
+      name: basename(path) || parse(path).root,
+      path,
+    }));
+  }
+
+  hasProject(id: string) {
+    return this.projects.has(id);
   }
 
   registerProject(path: string) {
@@ -158,6 +171,8 @@ export class SessionManager {
     return { ok: true };
   }
   resize(projectId: string, cols: number, rows: number): AIReply {
+    if (this.busy && projectId !== this.projectId)
+      return rejected('실행 중인 프로젝트의 화면 크기만 변경할 수 있어요.');
     if (!this.projects.has(projectId) || !sizeIsValid(cols, rows))
       return rejected('화면 크기를 확인할 수 없어요.');
     this.cols = cols;

@@ -122,10 +122,10 @@ test('AI IPC는 임의 프로젝트·인자·iframe을 거부한다', async () =
     if (!bridge) throw new Error('bridge missing');
     const fake = '12345678-1234-4234-8234-123456789012';
     return [
-      await bridge.sendAIPrompt(fake, 'hello'),
-      await bridge.sendAIPrompt('../../', '--help'),
+      await bridge.sendAIPrompt(fake, 'hello', null, null),
+      await bridge.sendAIPrompt('../../', '--help', null, null),
       await bridge.resizeAISession(fake, 1000000, 1),
-      await bridge.stopAISession(fake),
+      await bridge.stopAISession(fake, fake),
     ];
   });
   expect(results.every((result) => !result.ok)).toBe(true);
@@ -144,6 +144,91 @@ test('AI IPC는 임의 프로젝트·인자·iframe을 거부한다', async () =
   });
   expect(invalidFrame).toMatchObject({ ok: false });
   expect((await session()).state).toBe('idle');
+});
+
+test('앱 내부 연결 끊김·다시 연결과 실패한 화면 크기 재적용', async () => {
+  await fixture();
+  await openConversation();
+  await page.getByRole('textbox', { name: 'Codex에게 보낼 메시지' }).fill('보존할 한글 입력');
+  await expect(page.getByRole('button', { name: '메시지 보내기' })).toBeEnabled();
+  await app.evaluate(async (_electron, url) => {
+    const require = process.getBuiltinModule('module').createRequire(url);
+    const { LocalApiClient } = require(
+      process.getBuiltinModule('url').fileURLToPath(new URL('./local-api/client.js', url)),
+    );
+    const originalRead = LocalApiClient.prototype.readSession;
+    const originalCommand = LocalApiClient.prototype.command;
+    const originalReconnect = LocalApiClient.prototype.reconnect;
+    const interrupted = new Set<object>();
+    let failResize = true;
+    const resizeTrace = { armed: false, failed: null as unknown, applied: null as unknown };
+    LocalApiClient.prototype.testResizeTrace = resizeTrace;
+    LocalApiClient.prototype.readSession = async function (...args: unknown[]) {
+      if (!interrupted.has(this)) {
+        interrupted.add(this);
+        this.socket?.terminate();
+        this.fatal = true;
+      }
+      return originalRead.apply(this, args);
+    };
+    LocalApiClient.prototype.command = async function (...args: unknown[]) {
+      if (args[1] === 'resize' && failResize && resizeTrace.armed) {
+        failResize = false;
+        resizeTrace.failed = args[2];
+        return { ok: false, message: '합성: 크기 변경 응답 1회 실패' };
+      }
+      const result = await originalCommand.apply(this, args);
+      if (args[1] === 'resize' && result.ok && resizeTrace.failed) resizeTrace.applied = args[2];
+      return result;
+    };
+    LocalApiClient.prototype.reconnect = function () {
+      LocalApiClient.prototype.readSession = originalRead;
+      LocalApiClient.prototype.reconnect = originalReconnect;
+      return originalReconnect.call(this);
+    };
+  }, managerUrl);
+  await expect(page.getByRole('button', { name: '다시 연결', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '메시지 보내기' })).toBeDisabled();
+  await mkdir(resolve('.runtime', 'screens'), { recursive: true });
+  await page.screenshot({ path: resolve('.runtime', 'screens', '12-api-reconnect.png') });
+  await page.getByRole('button', { name: '다시 연결', exact: true }).click();
+  await expect(page.getByRole('button', { name: '메시지 보내기' })).toBeEnabled();
+  await expect(page.getByRole('textbox', { name: 'Codex에게 보낼 메시지' })).toHaveValue(
+    '보존할 한글 입력',
+  );
+  await expect(page.getByRole('button', { name: '다시 연결', exact: true })).toHaveCount(0);
+  // Arm after the reconnect notice has disappeared so both attempts use the same layout.
+  await app.evaluate(async ({ BrowserWindow }, url) => {
+    const require = process.getBuiltinModule('module').createRequire(url);
+    const { LocalApiClient } = require(
+      process.getBuiltinModule('url').fileURLToPath(new URL('./local-api/client.js', url)),
+    );
+    LocalApiClient.prototype.testResizeTrace.armed = true;
+    BrowserWindow.getAllWindows()[0].setSize(1050, 760);
+  }, managerUrl);
+  await expect
+    .poll(async () =>
+      app.evaluate(async (_electron, url) => {
+        const require = process.getBuiltinModule('module').createRequire(url);
+        const { aiSession } = require(url.replace('file:///', ''));
+        const { LocalApiClient } = require(
+          process.getBuiltinModule('url').fileURLToPath(new URL('./local-api/client.js', url)),
+        );
+        const trace = LocalApiClient.prototype.testResizeTrace;
+        return Boolean(
+          trace.failed &&
+            trace.applied &&
+            trace.failed.cols === trace.applied.cols &&
+            trace.failed.rows === trace.applied.rows &&
+            aiSession.cols === trace.applied.cols &&
+            aiSession.rows === trace.applied.rows,
+        );
+      }, managerUrl),
+    )
+    .toBe(true);
+  const projects = await page.evaluate(() => window.desktop?.listProjects());
+  expect(projects?.storage).toBe('memory');
+  expect(projects?.projects).toHaveLength(1);
 });
 
 test('실제 Codex 연결: 중단·앱 종료', async () => {

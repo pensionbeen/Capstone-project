@@ -98,10 +98,7 @@ export default function App() {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       try {
-        const snapshot = await window.desktop?.readAISession(
-          desktopProjectId,
-          Number.MAX_SAFE_INTEGER,
-        );
+        const snapshot = await window.desktop?.readAIStatus(desktopProjectId);
         if (!disposed && snapshot) setAIStatus(snapshot);
       } catch {
         /* The conversation window displays connection errors. */

@@ -18,6 +18,9 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
   const [input, setInput] = useState('');
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [connectionMessage, setConnectionMessage] = useState('앱 내부 연결을 확인하고 있어요.');
+  const [retryRequired, setRetryRequired] = useState(false);
   const busy = activeAIStates.includes(snapshot.state) || sending;
   const projectId = project.desktopId;
 
@@ -60,6 +63,7 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
     let cursor = 0;
     let outputId: string | null = null;
     let lastSize = '';
+    let resizePending = false;
     let polling: ReturnType<typeof setTimeout> | undefined;
     let resizing: ReturnType<typeof setTimeout> | undefined;
     const resize = () => {
@@ -68,29 +72,48 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
         if (disposed || element.clientWidth === 0) return;
         fit.fit();
         const size = `${terminal.cols}:${terminal.rows}`;
-        if (lastSize === size) return;
-        lastSize = size;
+        if (lastSize === size || resizePending) return;
+        resizePending = true;
         void bridge
           .resizeAISession(
             projectId,
             Math.max(20, Math.min(512, terminal.cols)),
             Math.max(5, Math.min(120, terminal.rows)),
           )
-          .catch(() => {});
+          .then((result) => {
+            if (!disposed) lastSize = result.ok ? size : '';
+          })
+          .catch(() => {
+            lastSize = '';
+          })
+          .finally(() => {
+            resizePending = false;
+          });
       }, 150);
     };
     const observer = new ResizeObserver(resize);
     observer.observe(element);
     resize();
+    const read = async (after: number) => {
+      const result = await bridge.readAISession(projectId, after, outputId);
+      if ('connectionError' in result) {
+        if (!disposed) {
+          setConnectionMessage(result.connectionError.message);
+          setRetryRequired(result.connectionError.code === 'retry-required');
+        }
+        throw new Error('Connection unavailable');
+      }
+      return result;
+    };
     const poll = async () => {
       try {
-        let next = await bridge.readAISession(projectId, cursor);
+        let next = await read(cursor);
         if (disposed) return;
-        if (next.outputId !== outputId) {
+        if (next.outputId !== outputId || next.nextSequence < cursor) {
           terminal.reset();
           cursor = 0;
           outputId = next.outputId;
-          next = await bridge.readAISession(projectId, 0);
+          next = await read(0);
           if (disposed) return;
           outputId = next.outputId;
         }
@@ -108,10 +131,12 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
         }
         if (!disposed) {
           setSnapshot(next);
-          if (next.chunks.length) resize();
+          setConnected(true);
+          setRetryRequired(false);
+          resize();
         }
       } catch {
-        if (!disposed) setMessage('대화 출력을 읽지 못했어요. 앱 연결을 확인해 주세요.');
+        if (!disposed) setConnected(false);
       } finally {
         if (!disposed) polling = setTimeout(poll, 250);
       }
@@ -129,11 +154,11 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
 
   async function send() {
     const bridge = window.desktop;
-    if (!bridge || !projectId || busy || !input.trim()) return;
+    if (!bridge || !projectId || busy || !connected || !input.trim()) return;
     setSending(true);
     setMessage('');
     try {
-      const result = await bridge.sendAIPrompt(projectId, input);
+      const result = await bridge.sendAIPrompt(projectId, input, snapshot.outputId, snapshot.id);
       if (result.ok) {
         setInput('');
         setSnapshot((old) => ({
@@ -143,7 +168,7 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
         }));
       } else setMessage(result.message ?? '메시지를 보내지 못했어요.');
     } catch {
-      setMessage('메시지를 보내지 못했어요. 앱 연결을 확인해 주세요.');
+      setMessage('요청 결과를 확인하지 못했어요. 현재 실행 상태를 확인한 뒤 다시 시도해 주세요.');
     } finally {
       setSending(false);
     }
@@ -184,6 +209,25 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
           <span className={`status-dot ${busy ? 'running' : ''}`} />
           {snapshot.message}
         </div>
+        {projectId && !connected && (
+          <div className="form-message" role="status">
+            {connectionMessage}
+            {retryRequired && (
+              <Button
+                variant="secondary"
+                onClick={async () => {
+                  const reply = await window.desktop?.reconnectAI();
+                  if (reply?.ok) {
+                    setRetryRequired(false);
+                    setConnectionMessage('앱 내부 연결을 확인하고 있어요.');
+                  }
+                }}
+              >
+                다시 연결
+              </Button>
+            )}
+          </div>
+        )}
         <section ref={outputRef} className="ai-terminal" aria-label="Codex 실행 출력" />
         <form
           className="ai-composer"
@@ -213,7 +257,7 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
                 disabled={snapshot.state === 'stopping'}
                 onClick={async () => {
                   if (!projectId) return;
-                  const result = await window.desktop?.stopAISession(projectId);
+                  const result = await window.desktop?.stopAISession(projectId, snapshot.id);
                   if (result && !result.ok)
                     setMessage(result.message ?? '중단 요청을 확인해 주세요.');
                 }}
@@ -225,6 +269,7 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
                 type="submit"
                 disabled={
                   !input.trim() ||
+                  !connected ||
                   availability?.status !== 'ready' ||
                   !projectId ||
                   !snapshot.cleanupConfirmed
@@ -254,10 +299,14 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
           {snapshot.truncated && <p>이전 출력 일부는 보관 한도를 넘어 생략했어요.</p>}
           <Button
             variant="ghost"
-            disabled={busy || !snapshot.cleanupConfirmed || !projectId}
+            disabled={busy || !connected || !snapshot.cleanupConfirmed || !projectId}
             onClick={async () => {
               if (!projectId) return;
-              const result = await window.desktop?.resetAISession(projectId);
+              const result = await window.desktop?.resetAISession(
+                projectId,
+                snapshot.outputId,
+                snapshot.id,
+              );
               if (result && !result.ok)
                 setMessage(result.message ?? '새 대화를 시작하지 못했어요.');
             }}
