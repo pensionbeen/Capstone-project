@@ -66,7 +66,7 @@ export function ProjectStorage({
           <p className="field-hint">
             {loading
               ? '저장 상태를 확인하고 있어요.'
-              : '확정한 폴더 선택은 저장돼요. 이름은 ‘이 프로젝트로 시작’을 누르면 저장돼요. 요구분석·기능·대화는 아직 이 창에만 남아요.'}
+              : '프로젝트 이름과 폴더는 확정할 때 저장돼요. 기능·완료 조건·선행 관계·검증 결과도 프로젝트별로 저장돼요. 요구분석 대화와 실행 이력은 아직 이 창에만 남아요.'}
           </p>
           {catalog.projects.length > 0 && (
             <details className="saved-projects">
@@ -113,8 +113,8 @@ export function ProjectStorage({
           }}
         >
           <p className="dialog-copy">
-            프로젝트 이름·폴더 위치·마지막 선택을 보관해요. 소스 파일, AI 로그인, 대화와 기능 목록은
-            이 백업에 포함되지 않아요.
+            프로젝트와 기능 묶음·선행 관계·완료 조건·검증 결과를 함께 보관해요. 소스 파일, AI
+            로그인, 요구분석 대화와 실행 이력은 이 백업에 포함되지 않아요.
           </p>
           <p className="field-hint">백업 위치: {directory || '확인 중'}</p>
           <Button disabled={busy} onClick={() => perform()}>

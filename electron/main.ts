@@ -13,6 +13,7 @@ import {
 } from 'electron';
 import { emptyAISnapshot } from '../shared/ai.js';
 import type { FolderResult } from '../shared/desktop.js';
+import type { ProjectFeaturePlan } from '../shared/feature-plan.js';
 import type { ProjectCatalog, ProjectResult, StorageResult } from '../shared/storage.js';
 import { promptIsValid, rejected, sizeIsValid, UUID } from './ai/contracts.js';
 import { SessionManager } from './ai/session-manager.js';
@@ -255,6 +256,26 @@ void app.whenReady().then(async () => {
       throw new Error('프로젝트를 조회할 수 없어요.');
     return apiClient.listProjects();
   });
+  ipcMain.handle('features:load', (event, ...args: unknown[]) => {
+    const [id] = args;
+    if (!trusted(event) || args.length !== 1 || !projectArgument(id) || !projectStore)
+      return { ok: false, message: '저장된 기능 계획을 조회할 수 없어요.' };
+    try {
+      return { ok: true, plan: projectStore.featurePlan(id) };
+    } catch (error) {
+      return { ok: false, message: storageMessage(error) };
+    }
+  });
+  ipcMain.handle('features:save', (event, ...args: unknown[]) => {
+    const [id, plan] = args;
+    if (!trusted(event) || args.length !== 2 || !projectArgument(id) || !projectStore)
+      return { ok: false, message: '저장할 기능 계획을 확인해 주세요.' };
+    try {
+      return { ok: true, plan: projectStore.saveFeaturePlan(id, plan as ProjectFeaturePlan) };
+    } catch (error) {
+      return { ok: false, message: storageMessage(error) };
+    }
+  });
   for (const action of ['activate', 'save-name'] as const) {
     ipcMain.handle(`project:${action}`, (event, ...args: unknown[]): ProjectResult => {
       const [id, name] = args;
@@ -318,7 +339,7 @@ void app.whenReady().then(async () => {
         title: '프로젝트 목록 복원',
         message: '백업 시점의 프로젝트 목록과 마지막 선택으로 돌아갈까요?',
         detail:
-          '현재 목록을 먼저 백업해요. 이 창의 저장되지 않은 요구분석·기능·검증·대화 표시는 초기화돼요. 프로젝트 폴더의 파일은 변경하지 않아요.',
+          '현재 프로젝트·기능·검증 데이터도 먼저 백업해요. 복원 후 선택된 프로젝트와 저장된 기능·검증 정보를 다시 불러옵니다. 저장하지 않은 요구분석·대화 입력은 포함되지 않아요.',
         buttons: ['취소', '백업으로 복원'],
         defaultId: 0,
         cancelId: 0,

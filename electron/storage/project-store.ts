@@ -14,11 +14,23 @@ import {
 } from 'node:fs';
 import { basename, isAbsolute, join, normalize, parse } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import {
+  emptyFeaturePlan,
+  type ProjectFeaturePlan,
+  validateFeaturePlan,
+} from '../../shared/feature-plan.js';
 import type { ProjectBackup, ProjectCatalog, SavedProject } from '../../shared/storage.js';
 import { UUID } from '../ai/contracts.js';
+import {
+  FEATURE_TABLES,
+  readAllFeaturePlans,
+  readFeaturePlan,
+  writeFeaturePlan,
+} from './feature-plan-store.js';
 
 const APP_ID = 0x4f524254;
-const VERSION = 1;
+const VERSION = 2;
+const PREVIOUS_VERSION = 1;
 const MAX_PROJECTS = 100;
 const MAX_BACKUPS = 20;
 const MAX_DB_BYTES = 16 * 1024 * 1024;
@@ -71,9 +83,10 @@ function checkFile(path: string) {
     throw new StorageError('저장 파일의 형식이나 크기를 확인할 수 없어요. 원본을 보존했어요.');
 }
 function readSnapshot(db: DatabaseSync) {
+  const version = db.prepare('PRAGMA user_version').get()?.user_version;
   if (
     db.prepare('PRAGMA application_id').get()?.application_id !== APP_ID ||
-    db.prepare('PRAGMA user_version').get()?.user_version !== VERSION
+    (version !== VERSION && version !== PREVIOUS_VERSION)
   )
     throw new StorageError('지원하는 ORBIT 저장 버전이 아니에요. 원본을 보존했어요.');
   const schema = db
@@ -81,13 +94,15 @@ function readSnapshot(db: DatabaseSync) {
       "SELECT name, type, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
     )
     .all();
+  const expectedTables = version === VERSION ? { ...TABLES, ...FEATURE_TABLES } : TABLES;
   if (
-    schema.length !== 2 ||
+    schema.length !== Object.keys(expectedTables).length ||
     schema.some(
       (row) =>
         row.type !== 'table' ||
-        !(String(row.name) in TABLES) ||
-        sqlShape(String(row.sql)) !== sqlShape(TABLES[row.name as keyof typeof TABLES]),
+        !(String(row.name) in expectedTables) ||
+        sqlShape(String(row.sql)) !==
+          sqlShape(expectedTables[row.name as keyof typeof expectedTables]),
     )
   )
     throw new StorageError('저장 구조가 예상과 달라 열지 않았어요. 원본을 보존했어요.');
@@ -126,12 +141,25 @@ function readSnapshot(db: DatabaseSync) {
     !(state.activeProjectId === null || rows.some((p) => p.id === state.activeProjectId))
   )
     throw new StorageError('마지막 프로젝트의 연결 정보가 올바르지 않아요. 원본을 보존했어요.');
+  const projectIds = rows.map((p) => String(p.id));
+  const featurePlans =
+    version === VERSION
+      ? readAllFeaturePlans(db, projectIds)
+      : Object.fromEntries(projectIds.map((id) => [id, emptyFeaturePlan()]));
   const snapshot = {
     projects: rows.map((row) => ({ ...row })) as unknown as SavedProject[],
     activeProjectId: state.activeProjectId as string | null,
+    featurePlans,
   };
-  if (Buffer.byteLength(JSON.stringify(snapshot)) > 512 * 1024)
+  if (
+    Buffer.byteLength(
+      JSON.stringify({ projects: snapshot.projects, activeProjectId: snapshot.activeProjectId }),
+    ) >
+    512 * 1024
+  )
     throw new StorageError('프로젝트 목록의 전체 크기 한도를 넘었어요. 이전 목록은 유지돼요.');
+  if (Buffer.byteLength(JSON.stringify(snapshot.featurePlans)) > 2 * 1024 * 1024)
+    throw new StorageError('기능과 검증 기록의 크기 한도를 넘었어요. 원본은 보존했어요.');
   return snapshot;
 }
 
@@ -168,10 +196,17 @@ export class ProjectStore {
       if (version === 0) {
         // Only a newly created file can reach this path; existing unknown/v0 files stay untouched.
         this.transaction(() => {
-          for (const sql of Object.values(TABLES)) this.db.exec(sql);
+          for (const sql of Object.values({ ...TABLES, ...FEATURE_TABLES })) this.db.exec(sql);
           this.db.exec(
             `INSERT INTO app_state(id, active_project_id) VALUES (1, NULL); PRAGMA application_id=${APP_ID}; PRAGMA user_version=${VERSION}`,
           );
+        });
+      } else if (version === PREVIOUS_VERSION) {
+        // Preserve a verified v1 copy before changing the live schema. DDL and version bump roll back together.
+        this.backup();
+        this.transaction(() => {
+          for (const sql of Object.values(FEATURE_TABLES)) this.db.exec(sql);
+          this.db.exec(`PRAGMA user_version=${VERSION}`);
         });
       }
       this.snapshot = readSnapshot(this.db);
@@ -215,6 +250,26 @@ export class ProjectStore {
       }
       throw error;
     }
+  }
+  featurePlan(projectId: string): ProjectFeaturePlan {
+    if (!UUID.test(projectId)) throw new StorageError('프로젝트를 다시 선택해 주세요.');
+    this.project(projectId);
+    return readFeaturePlan(this.db, projectId);
+  }
+  private schemaVersion() {
+    return Number(this.db.prepare('PRAGMA user_version').get()?.user_version);
+  }
+  saveFeaturePlan(projectId: string, plan: ProjectFeaturePlan) {
+    if (!UUID.test(projectId) || !validateFeaturePlan(plan))
+      throw new StorageError('기능·선행 관계·완료 조건·검증 기록을 확인해 주세요.');
+    return this.transaction(() => {
+      const project = this.project(projectId);
+      writeFeaturePlan(this.db, projectId, plan);
+      this.db
+        .prepare('UPDATE projects SET updated_at = ? WHERE id = ?')
+        .run(Math.max(Date.now(), project.updatedAt), projectId);
+      return this.featurePlan(projectId);
+    });
   }
   catalog(): ProjectCatalog {
     return {
@@ -355,11 +410,19 @@ export class ProjectStore {
         'INSERT INTO projects(id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
       );
       for (const p of snapshot.projects) insert.run(p.id, p.name, p.path, p.createdAt, p.updatedAt);
+      for (const p of snapshot.projects) {
+        const plan = snapshot.featurePlans[p.id] ?? emptyFeaturePlan();
+        if (this.schemaVersion() === VERSION) writeFeaturePlan(this.db, p.id, plan);
+      }
       this.db
         .prepare('UPDATE app_state SET active_project_id = ? WHERE id = 1')
         .run(snapshot.activeProjectId);
     });
-    return { ...snapshot, storage: 'sqlite' as const };
+    return {
+      projects: snapshot.projects,
+      activeProjectId: snapshot.activeProjectId,
+      storage: 'sqlite' as const,
+    };
   }
   close() {
     if (!this.closed) {
