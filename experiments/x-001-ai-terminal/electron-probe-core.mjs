@@ -23,7 +23,7 @@ export function probeElectronVersion(file, { spawnChild = spawn, timeoutMs = 100
         windowsHide: true, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
-      child.stdout.on('data', data => {
+      child.stdout.setEncoding('utf8').on('data', data => {
         stdout += data;
         if (Buffer.byteLength(stdout) > 4096) stop('ELECTRON_OUTPUT_LIMIT');
       });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdtemp, mkdir, writeFile, unlink } from 'node:fs/promises';
 import { capture, cmdInvocation, requiredFlags, terminalExitCode, runtime } from './lib.mjs';
-import { chooseModel, checkCodexEnv, parseCatalog, parsePacket, validatePacket, promptFor, codexEvidence, codexTextEvidence, geminiEvidence, verdict } from './review-core.mjs';
+import { chooseModel, checkCodexEnv, parseCatalog, parsePacket, validatePacket, promptFor, encodeReviewSource, codexEvidence, codexTextEvidence, geminiEvidence, verdict } from './review-core.mjs';
 import { checkUserSettings, checkGeminiEnv } from './gemini-guard.mjs';
 import { snapshot } from './snapshot.mjs';
 import { parseAgyHelp } from './agy-help.mjs';
@@ -114,6 +114,19 @@ test('Gemini init is configuration only; missing stats cannot verify model', () 
   const evidence = geminiEvidence(result, 'gemini-3.1-pro-preview');
   assert.equal(evidence.exactModelConfirmed, false);
   assert.equal(verdict(result, evidence), 'RESPONSE_OBSERVED_MODEL_UNCONFIRMED');
+});
+
+test('Explicit encoded source round-trips imports, escapes and Korean without CLI file expansion', () => {
+  const source = "import x from '@scope/module';\n" + String.raw`const path = 'C:\\한글\\x';`;
+  const encoded = encodeReviewSource(source);
+  assert.equal(JSON.parse(encoded.content), source);
+  const packet = { taskId: 'X-001', baseCommit: 'a'.repeat(40), scope: 'encoded source',
+    verification: 'roundtrip', remaining: 'service semantics', reviewFocus: 'original code', ...encoded };
+  assert.equal(promptFor(packet).includes('@'), false);
+  assert.ok(promptFor(packet).includes('JSON 문자열 인코딩'));
+  assert.throws(() => validatePacket({ ...packet, contentEncoding: 'unknown' }), /ENCODING/u);
+  assert.throws(() => validatePacket({ ...packet, content: 'null' }), /ENCODING/u);
+  assert.throws(() => validatePacket({ ...packet, content: '"Bea\\u0072er fake-sensitive-test"' }), /SECRET/u);
 });
 
 test('Review source preserves literal backslashes and newlines without a second JSON escape layer', () => {
