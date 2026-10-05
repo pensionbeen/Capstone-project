@@ -95,7 +95,7 @@ export function OverviewPage({
           type="button"
           className="text-button"
           onClick={onAdd}
-          disabled={features.length >= 30}
+          disabled={features.length >= 100}
         >
           <Icon name="plus" size={16} />
           기능 추가
@@ -204,10 +204,12 @@ export function VerificationPage({
   features,
   records,
   onRecord,
+  persisted,
 }: {
   features: Feature[];
   records: Verification[];
   onRecord: () => void;
+  persisted: boolean;
 }) {
   const summary = progress(features, records);
   return (
@@ -229,7 +231,7 @@ export function VerificationPage({
           </strong>
           <p>조건이 바뀌면 이전 결과를 보존하고 다시 검증해요.</p>
         </div>
-        <Badge>이 창의 기록</Badge>
+        <Badge>{persisted ? '프로젝트에 저장한 기록' : '이 창의 기록'}</Badge>
       </div>
       {records.length ? (
         <div className="verification-records">
@@ -267,7 +269,9 @@ export function VerificationPage({
         />
       )}
       <Notice>
-        현재 기록은 화면을 확인하기 위한 임시 데이터예요. 창을 닫거나 새로고침하면 사라져요.
+        {persisted
+          ? '검증 기록은 프로젝트에 저장돼요. 기능 내용이나 조건을 바꾸면 이전 기록을 보존하고 다시 검증해야 해요.'
+          : '예시 프로젝트의 기록은 이 창에서만 유지돼요. 창을 닫거나 새로고침하면 사라져요.'}
       </Notice>
     </section>
   );

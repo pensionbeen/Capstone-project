@@ -1,5 +1,7 @@
+import type { StoredFeature } from '../shared/feature-plan';
+
 export type Step = 0 | 1 | 2 | 3;
-export type View = 'overview' | 'verification' | 'protection' | 'transfer' | 'history';
+export type View = 'overview' | 'features' | 'verification' | 'protection' | 'transfer' | 'history';
 export type Provider = 'Codex' | 'Gemini';
 export type EventKind = 'feature' | 'settings' | 'verification';
 
@@ -10,14 +12,7 @@ export interface Project {
   sample: boolean;
 }
 
-export interface Feature {
-  id: string;
-  title: string;
-  description: string;
-  criteria: string;
-  included: boolean;
-  revision: number;
-}
+export type Feature = StoredFeature;
 
 export interface Verification {
   id: string;
@@ -74,7 +69,9 @@ export function validFeature(feature: Feature): boolean {
   return (
     feature.title.trim().length > 0 &&
     feature.title.length <= 80 &&
-    criteriaLines(feature.criteria).length > 0 &&
+    (feature.kind === 'group'
+      ? !feature.criteria.trim()
+      : criteriaLines(feature.criteria).length > 0) &&
     feature.criteria.length <= 2000
   );
 }
@@ -101,7 +98,7 @@ export function featureState(
 }
 
 export function progress(features: Feature[], records: Verification[]) {
-  const included = features.filter((feature) => feature.included);
+  const included = features.filter((feature) => feature.included && feature.kind === 'leaf');
   const done = included.filter((feature) => featureState(feature, records) === 'passed').length;
   return {
     total: included.length,
@@ -114,7 +111,13 @@ export function canRecordVerification(
   feature: Feature,
   record: Pick<Verification, 'result' | 'observation' | 'evidence' | 'checkedCriteria'>,
 ): boolean {
-  if (!validFeature(feature) || !record.observation.trim() || !record.evidence.trim()) return false;
+  if (
+    feature.kind !== 'leaf' ||
+    !validFeature(feature) ||
+    !record.observation.trim() ||
+    !record.evidence.trim()
+  )
+    return false;
   return (
     record.result === 'failed' ||
     criteriaLines(feature.criteria).every((criterion) => record.checkedCriteria.includes(criterion))
@@ -172,10 +175,13 @@ export function makeDrafts(topic: string, scope: string[]): Feature[] {
   ];
   return drafts
     .filter((item) => item.id === 'create' || scope.includes(item.id))
-    .map((item) => ({
+    .map((item, order) => ({
       ...item,
       included: true,
       revision: 1,
+      kind: 'leaf',
+      parentId: null,
+      order,
     }));
 }
 

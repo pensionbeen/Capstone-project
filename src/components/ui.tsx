@@ -17,6 +17,18 @@ const paths = {
   chevron: <path d="m9 5 7 7-7 7" />,
   down: <path d="m6 9 6 6 6-6" />,
   check: <path d="m5 12 4 4L19 6" />,
+  warning: (
+    <>
+      <path d="M12 3 2 21h20L12 3Z" />
+      <path d="M12 9v5M12 17h.01" />
+    </>
+  ),
+  error: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m9 9 6 6m0-6-6 6" />
+    </>
+  ),
   plus: <path d="M12 5v14M5 12h14" />,
   close: <path d="m6 6 12 12M6 18 18 6" />,
   sparkle: (

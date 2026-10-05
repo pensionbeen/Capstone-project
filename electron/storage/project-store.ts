@@ -23,14 +23,14 @@ import type { ProjectBackup, ProjectCatalog, SavedProject } from '../../shared/s
 import { UUID } from '../ai/contracts.js';
 import {
   FEATURE_TABLES,
+  PATH_TABLES,
   readAllFeaturePlans,
   readFeaturePlan,
   writeFeaturePlan,
 } from './feature-plan-store.js';
 
 const APP_ID = 0x4f524254;
-const VERSION = 2;
-const PREVIOUS_VERSION = 1;
+const VERSION = 3;
 const MAX_PROJECTS = 100;
 const MAX_BACKUPS = 20;
 const MAX_DB_BYTES = 16 * 1024 * 1024;
@@ -86,7 +86,7 @@ function readSnapshot(db: DatabaseSync) {
   const version = db.prepare('PRAGMA user_version').get()?.user_version;
   if (
     db.prepare('PRAGMA application_id').get()?.application_id !== APP_ID ||
-    (version !== VERSION && version !== PREVIOUS_VERSION)
+    (version !== VERSION && version !== 2 && version !== 1)
   )
     throw new StorageError('지원하는 ORBIT 저장 버전이 아니에요. 원본을 보존했어요.');
   const schema = db
@@ -94,7 +94,12 @@ function readSnapshot(db: DatabaseSync) {
       "SELECT name, type, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY name",
     )
     .all();
-  const expectedTables = version === VERSION ? { ...TABLES, ...FEATURE_TABLES } : TABLES;
+  const expectedTables =
+    version === 1
+      ? TABLES
+      : version === 2
+        ? { ...TABLES, ...FEATURE_TABLES }
+        : { ...TABLES, ...FEATURE_TABLES, ...PATH_TABLES };
   if (
     schema.length !== Object.keys(expectedTables).length ||
     schema.some(
@@ -143,8 +148,8 @@ function readSnapshot(db: DatabaseSync) {
     throw new StorageError('마지막 프로젝트의 연결 정보가 올바르지 않아요. 원본을 보존했어요.');
   const projectIds = rows.map((p) => String(p.id));
   const featurePlans =
-    version === VERSION
-      ? readAllFeaturePlans(db, projectIds)
+    version !== 1
+      ? readAllFeaturePlans(db, projectIds, version === VERSION)
       : Object.fromEntries(projectIds.map((id) => [id, emptyFeaturePlan()]));
   const snapshot = {
     projects: rows.map((row) => ({ ...row })) as unknown as SavedProject[],
@@ -196,16 +201,18 @@ export class ProjectStore {
       if (version === 0) {
         // Only a newly created file can reach this path; existing unknown/v0 files stay untouched.
         this.transaction(() => {
-          for (const sql of Object.values({ ...TABLES, ...FEATURE_TABLES })) this.db.exec(sql);
+          for (const sql of Object.values({ ...TABLES, ...FEATURE_TABLES, ...PATH_TABLES }))
+            this.db.exec(sql);
           this.db.exec(
             `INSERT INTO app_state(id, active_project_id) VALUES (1, NULL); PRAGMA application_id=${APP_ID}; PRAGMA user_version=${VERSION}`,
           );
         });
-      } else if (version === PREVIOUS_VERSION) {
-        // Preserve a verified v1 copy before changing the live schema. DDL and version bump roll back together.
+      } else if (version < VERSION) {
+        // Preserve a verified old-version copy; schema changes and version bump roll back together.
         this.backup();
         this.transaction(() => {
-          for (const sql of Object.values(FEATURE_TABLES)) this.db.exec(sql);
+          if (version === 1) for (const sql of Object.values(FEATURE_TABLES)) this.db.exec(sql);
+          for (const sql of Object.values(PATH_TABLES)) this.db.exec(sql);
           this.db.exec(`PRAGMA user_version=${VERSION}`);
         });
       }

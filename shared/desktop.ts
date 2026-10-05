@@ -8,6 +8,7 @@ import type {
   ProjectResult,
   StorageResult,
 } from './storage.js';
+import type { FileListResult, OpenFileResult } from './workspace-files.js';
 
 export type FolderResult =
   | { status: 'selected'; name: string; path: string; projectId?: string }
@@ -23,6 +24,8 @@ export interface DesktopBridge {
   saveProjectName: (id: string, name: string) => Promise<ProjectResult>;
   loadFeaturePlan: (id: string) => Promise<FeaturePlanResult>;
   saveFeaturePlan: (id: string, plan: ProjectFeaturePlan) => Promise<FeaturePlanResult>;
+  listProjectFiles: (id: string, path: string) => Promise<FileListResult>;
+  openProjectFile: (id: string, path: string) => Promise<OpenFileResult>;
   listProjectBackups: () => Promise<{ backups: ProjectBackup[]; directory: string }>;
   backupProjects: () => Promise<StorageResult>;
   restoreProjects: (id: string) => Promise<StorageResult>;

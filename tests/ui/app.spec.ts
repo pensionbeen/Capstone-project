@@ -164,6 +164,8 @@ test('renderer는 Node 권한 없이 제한된 폴더 선택 API만 가진다', 
       'saveProjectName',
       'loadFeaturePlan',
       'saveFeaturePlan',
+      'listProjectFiles',
+      'openProjectFile',
       'listProjectBackups',
       'backupProjects',
       'restoreProjects',
@@ -268,8 +270,29 @@ test('새 초안 생성 시 이전 기능의 검증을 재사용하지 않는다
     page.getByRole('button', { name: '학습 기록 추가·수정', exact: true }),
   ).toBeVisible();
   await page.getByRole('button', { name: /기능 검증/ }).click();
-  await expect(page.getByText('이전 조건의 결과')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '할 일 추가·수정', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '아직 남긴 검증 결과가 없어요' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '할 일 추가·수정', exact: true })).toHaveCount(0);
+});
+
+test('프로젝트를 찾지 못한 알림은 성공 체크 대신 주의 표시를 쓴다', async () => {
+  const folder = resolve('.runtime', `toast-project-${randomUUID()}`);
+  await mkdir(folder, { recursive: true });
+  await app.evaluate(({ dialog, ipcMain }, folder) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
+    const handlers = (
+      ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> }
+    )._invokeHandlers;
+    handlers.set('project:activate', () => ({
+      ok: false,
+      message: '저장된 프로젝트를 찾지 못했어요.',
+    }));
+  }, folder);
+  await page.getByRole('button', { name: '프로젝트 폴더 선택', exact: true }).click();
+  const toast = page.getByRole('status');
+  await expect(toast).toHaveAttribute('data-tone', 'warning');
+  await expect(toast).toContainText('주의: 저장된 프로젝트를 찾지 못했어요.');
+  await expect(toast.locator('svg path').first()).toHaveAttribute('d', 'M12 3 2 21h20L12 3Z');
+  await page.screenshot({ path: '.runtime/screens/17-warning-toast.png', fullPage: true });
 });
 
 test('편집한 초안을 요구분석 왕복으로 덮어쓰지 않고 빈 기능 확정을 막는다', async () => {

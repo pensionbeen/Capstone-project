@@ -1,9 +1,10 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { type AIState, emptyAISnapshot } from '../shared/ai';
+import { descendantIds, removePlanFeature, updatePlanFeature } from '../shared/feature-editing';
 import {
   emptyFeaturePlan,
   type ProjectFeaturePlan,
-  type StoredFeature,
+  validateFeaturePlan,
 } from '../shared/feature-plan';
 import type { ProjectCatalog } from '../shared/storage';
 import { FeatureEditor, VerificationEditor, WorkDetails } from './components/FeatureDialogs';
@@ -12,7 +13,6 @@ import { Badge, Brand, Button, Icon, Modal } from './components/ui';
 import {
   type Activity,
   type EventKind,
-  editFeature,
   type Feature,
   initialProtection,
   makeDrafts,
@@ -23,6 +23,7 @@ import {
   type Verification,
   type View,
 } from './model';
+import { FeatureWorkspace } from './pages/FeatureWorkspace';
 import {
   type AnalysisDraft,
   AnalysisPage,
@@ -40,6 +41,7 @@ import {
 
 const navigation: { id: View; label: string; icon: IconName }[] = [
   { id: 'overview', label: '작업 대시보드', icon: 'grid' },
+  { id: 'features', label: '기능·파일 관리', icon: 'folder' },
   { id: 'verification', label: '기능 검증', icon: 'list' },
   { id: 'protection', label: '보호 정책', icon: 'shield' },
   { id: 'transfer', label: '파일 전송', icon: 'transfer' },
@@ -71,10 +73,12 @@ export default function App() {
   const [providers, setProviders] = useState<Provider[]>(['Codex']);
   const [protection, setProtection] = useState(initialProtection);
   const [analysis, setAnalysis] = useState(emptyAnalysis);
-  const [features, setFeatures] = useState<Feature[]>([]);
-  const [records, setRecords] = useState<Verification[]>([]);
   const [featurePlan, setFeaturePlan] = useState<ProjectFeaturePlan>(emptyFeaturePlan());
+  const features = featurePlan.features;
+  const records = featurePlan.verifications;
   const planSaveLock = useRef(false);
+  const [planSaving, setPlanSaving] = useState(false);
+  const [deleting, setDeleting] = useState<Feature | null>(null);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [editing, setEditing] = useState<Feature | null>(null);
   const [openedFeature, setOpenedFeature] = useState<string | null>(null);
@@ -83,7 +87,13 @@ export default function App() {
   const [showRegenerate, setShowRegenerate] = useState(false);
   const [showProjectSwitch, setShowProjectSwitch] = useState(false);
   const [mobileMenu, setMobileMenu] = useState(false);
-  const [toast, setToast] = useState('');
+  const [toast, setNotice] = useState<{
+    message: string;
+    tone: 'success' | 'warning' | 'error';
+  } | null>(null);
+  function setToast(message: string, tone: 'success' | 'warning' | 'error' = 'warning') {
+    setNotice({ message, tone });
+  }
   const [showAI, setShowAI] = useState(false);
   const [aiStatus, setAIStatus] = useState(emptyAISnapshot);
   const aiLabels: Record<AIState, string> = {
@@ -102,7 +112,10 @@ export default function App() {
         )
         .join(' · ')
     : `${providers.join(' · ')} 연결 전`;
-  const includedFeatures = features.filter((feature) => feature.included);
+  const includedFeatures = features.filter(
+    (feature) => feature.included && feature.kind === 'leaf',
+  );
+  const aiBusy = ['starting', 'running', 'stopping'].includes(aiStatus.state);
   const currentFeature = features.find((feature) => feature.id === openedFeature);
   const pageKey = `${inWorkspace ? view : step}`;
   const desktopProjectId = project?.desktopId;
@@ -126,13 +139,11 @@ export default function App() {
               sample: false,
             });
             setFeaturePlan(result.plan);
-            setFeatures(
-              result.plan.features
-                .filter((item) => item.kind === 'leaf')
-                .map(({ parentId, kind, order, ...item }) => item),
-            );
-            setRecords(result.plan.verifications);
-          } else setToast(result?.message ?? '저장된 기능 목록을 불러오지 못했어요.');
+          } else
+            setNotice({
+              message: result?.message ?? '저장된 기능 목록을 불러오지 못했어요.',
+              tone: 'warning',
+            });
         }
       })
       .catch(() => {
@@ -203,7 +214,7 @@ export default function App() {
   }, [pageKey]);
   useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(() => setToast(''), 4200);
+    const timer = window.setTimeout(() => setNotice(null), 4200);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
@@ -221,12 +232,10 @@ export default function App() {
     setPendingProject(null);
     setAnalysis(emptyAnalysis);
     setFeaturePlan(plan);
-    setFeatures(
-      plan.features
-        .filter((item) => item.kind === 'leaf')
-        .map(({ parentId, kind, order, ...item }) => item),
-    );
-    setRecords(plan.verifications);
+    setEditing(null);
+    setOpenedFeature(null);
+    setVerifyFeature(null);
+    setDeleting(null);
     setActivities([]);
     setProtection(initialProtection);
     setProviders(['Codex']);
@@ -236,15 +245,10 @@ export default function App() {
     if (value) addActivity('settings', '프로젝트 선택', `${value.name}의 화면 흐름을 시작했어요.`);
   }
   async function applyProject(value: Project) {
-    if (projectSaving) return;
+    if (projectSaving || planSaveLock.current) return;
     setProjectSaving(true);
     try {
       if (value.desktopId && window.desktop) {
-        const loaded = await window.desktop.loadFeaturePlan(value.desktopId);
-        if (!loaded.ok) {
-          setToast(loaded.message);
-          return;
-        }
         const result = await window.desktop.activateProject(value.desktopId);
         if (!result.ok) {
           setToast(result.message);
@@ -257,12 +261,12 @@ export default function App() {
             desktopId: result.project.id,
             sample: false,
           },
-          loaded.plan,
+          result.plan,
         );
         await reloadProjects();
       } else displayProject(value);
     } catch {
-      setToast('프로젝트 선택 결과를 확인하지 못했어요. 저장 목록을 다시 확인해 주세요.');
+      setToast('프로젝트 선택 결과를 확인하지 못했어요. 저장 목록을 다시 확인해 주세요.', 'error');
     } finally {
       setProjectSaving(false);
     }
@@ -282,57 +286,36 @@ export default function App() {
       }
       setStep(1);
     } catch {
-      setToast('저장 결과를 확인하지 못했어요. 이름 입력은 유지했어요.');
+      setToast('저장 결과를 확인하지 못했어요. 이름 입력은 유지했어요.', 'error');
     } finally {
       setProjectSaving(false);
     }
   }
   function chooseProject(value: Project) {
+    if (planSaveLock.current) return;
     if (project?.path === value.path && project.sample === value.sample) return;
     if (project && (analysis.goal || features.length)) setPendingProject(value);
     else applyProject(value);
   }
-  function storedPlan(
-    nextFeatures: Feature[],
-    nextRecords: Verification[],
-    base = featurePlan,
-  ): ProjectFeaturePlan {
-    const oldById = new Map(base.features.map((item) => [item.id, item]));
-    const visibleIds = new Set(nextFeatures.map((item) => item.id));
-    const groups = base.features.filter((item) => item.kind === 'group');
-    const leaves: StoredFeature[] = nextFeatures.map((item, order) => {
-      const previous = oldById.get(item.id);
-      return {
-        ...item,
-        parentId: previous?.parentId ?? null,
-        kind: 'leaf',
-        order: previous?.order ?? order,
-      };
-    });
-    const savedIds = new Set([...groups.map((item) => item.id), ...leaves.map((item) => item.id)]);
-    return {
-      features: [...groups, ...leaves],
-      dependencies: base.dependencies.filter(
-        (item) => savedIds.has(item.featureId) && savedIds.has(item.prerequisiteId),
-      ),
-      verifications: nextRecords.filter((item) => visibleIds.has(item.featureId)),
-    };
-  }
-  async function persistPlan(
-    nextFeatures: Feature[],
-    nextRecords: Verification[],
-    base = featurePlan,
-  ) {
+  async function persistPlan(candidate: ProjectFeaturePlan) {
     if (planSaveLock.current) {
       setToast('기능 저장을 마친 뒤 다시 시도해 주세요.');
       return false;
     }
-    const candidate = storedPlan(nextFeatures, nextRecords, base);
+    if (!validateFeaturePlan(candidate)) {
+      setToast('기능의 조건·경로·관계 또는 저장 한도를 확인해 주세요.');
+      return false;
+    }
+    if (aiBusy) {
+      setToast('AI 실행을 중단하고 정리가 끝난 뒤 기능을 변경해 주세요.');
+      return false;
+    }
     if (!project?.desktopId || !window.desktop) {
       setFeaturePlan(candidate);
       return true;
     }
     planSaveLock.current = true;
+    setPlanSaving(true);
     try {
       const saved = await window.desktop.saveFeaturePlan(project.desktopId, candidate);
       if (!saved.ok) {
@@ -342,10 +325,11 @@ export default function App() {
       setFeaturePlan(saved.plan);
       return true;
     } catch {
-      setToast('저장 결과를 확인하지 못했어요. 다시 조회해 주세요.');
+      setToast('저장 결과를 확인하지 못했어요. 다시 조회해 주세요.', 'error');
       return false;
     } finally {
       planSaveLock.current = false;
+      setPlanSaving(false);
     }
   }
   async function generateDrafts() {
@@ -354,14 +338,16 @@ export default function App() {
       ...feature,
       id: crypto.randomUUID(),
     }));
-    if (!(await persistPlan(next, [], emptyFeaturePlan()))) return;
-    setFeatures(next);
-    setRecords([]);
+    if (!(await persistPlan({ features: next, dependencies: [], verifications: [] }))) return;
     setShowRegenerate(false);
     setStep(3);
   }
-  function addFeature() {
-    if (features.length >= 30) return;
+  function addFeature(kind: 'leaf' | 'group' = 'leaf', parentId: string | null = null) {
+    if (planSaveLock.current) return;
+    if (features.length >= 100) {
+      setToast('기능과 묶음은 합쳐서 100개까지 저장할 수 있어요.');
+      return;
+    }
     setEditing({
       id: crypto.randomUUID(),
       title: '',
@@ -369,31 +355,43 @@ export default function App() {
       criteria: '',
       revision: 1,
       included: true,
+      kind,
+      parentId,
+      order: 0,
     });
   }
-  async function saveFeature(value: Feature) {
+  async function saveFeature(value: Feature, prerequisiteIds: string[]) {
     const old = features.find((item) => item.id === value.id);
-    const next = old
-      ? editFeature(old, {
-          title: value.title.trim(),
-          description: value.description.trim(),
-          criteria: value.criteria.trim(),
-        })
-      : { ...value, title: value.title.trim(), criteria: value.criteria.trim() };
-    const updated = old
-      ? features.map((item) => (item.id === value.id ? next : item))
-      : [...features, next];
-    if (!(await persistPlan(updated, records))) return;
-    setFeatures(updated);
+    let updated: ProjectFeaturePlan;
+    try {
+      updated = updatePlanFeature(featurePlan, value, prerequisiteIds);
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : '기능을 확인해 주세요.');
+      return;
+    }
+    if (!(await persistPlan(updated))) return;
     setEditing(null);
-    addActivity('feature', old ? '기능 내용 수정' : '새 기능 추가', next.title);
-    setToast(project?.desktopId ? '기능과 완료 조건을 저장했어요.' : '이 창에 기능을 저장했어요.');
+    addActivity('feature', old ? '기능 내용 수정' : '새 기능 추가', value.title);
+    setToast(
+      project?.desktopId ? '기능과 완료 조건을 저장했어요.' : '이 창에 기능을 저장했어요.',
+      'success',
+    );
   }
   async function toggleFeature(id: string) {
+    if (planSaveLock.current) return;
     const updated = features.map((item) =>
       item.id === id ? { ...item, included: !item.included } : item,
     );
-    if (await persistPlan(updated, records)) setFeatures(updated);
+    await persistPlan({ ...featurePlan, features: updated });
+  }
+  function openEditor(feature: Feature) {
+    if (!planSaveLock.current) setEditing(feature);
+  }
+  async function deleteFeature() {
+    if (!deleting || !(await persistPlan(removePlanFeature(featurePlan, deleting.id)))) return;
+    addActivity('feature', '기능 삭제', deleting.title);
+    setDeleting(null);
+    setOpenedFeature(null);
   }
   function navigate(next: View) {
     setView(next);
@@ -413,15 +411,17 @@ export default function App() {
         createdAt: new Date().toISOString(),
       },
     ];
-    if (!(await persistPlan(features, updated))) return;
-    setRecords(updated);
+    if (!(await persistPlan({ ...featurePlan, verifications: updated }))) return;
     setVerifyFeature(null);
     addActivity(
       'verification',
       value.result === 'passed' ? '검증 통과 기록' : '수정 필요 기록',
       feature.title,
     );
-    setToast(project?.desktopId ? '검증 결과를 저장했어요.' : '이 창에 검증 결과를 저장했어요.');
+    setToast(
+      project?.desktopId ? '검증 결과를 저장했어요.' : '이 창에 검증 결과를 저장했어요.',
+      'success',
+    );
   }
 
   return (
@@ -447,6 +447,7 @@ export default function App() {
             <button
               type="button"
               className="project-switcher"
+              disabled={planSaving}
               onClick={() => setShowProjectSwitch(true)}
             >
               <span className="project-avatar">{project.name.charAt(0)}</span>
@@ -599,7 +600,7 @@ export default function App() {
               <ProjectPage
                 project={project}
                 catalog={catalog}
-                loading={storageLoading || projectSaving}
+                loading={storageLoading || projectSaving || planSaving}
                 onRestored={restoredProjects}
                 onSelect={chooseProject}
                 onName={(name) => setProject((value) => (value ? { ...value, name } : value))}
@@ -607,40 +608,53 @@ export default function App() {
               />
             )}
             {!inWorkspace && step === 1 && (
-              <ConnectionPage
-                connectionSummary={connectionSummary}
-                actualProject={Boolean(project?.desktopId)}
-                onOpenAI={() => setShowAI(true)}
-                providers={providers}
-                onToggleProvider={(provider) => {
-                  setProviders((selected) =>
-                    selected.includes(provider)
-                      ? selected.filter((item) => item !== provider)
-                      : [...selected, provider],
-                  );
-                }}
-                protection={protection}
-                onProtection={(draft) => {
-                  setProtection(draft);
-                  addActivity(
-                    'settings',
-                    '보호 설정안 저장',
-                    '실제 보호 적용 전의 설정안을 수정했어요.',
-                  );
-                }}
-                onBack={() => setStep(0)}
-                onNext={() => {
-                  if (providers.length === 0) return;
-                  addActivity(
-                    'settings',
-                    'AI 도구 선택',
-                    aiStatus.id
-                      ? `선택한 AI: ${providers.join(', ')}. Codex 실행 상태: ${aiLabels[aiStatus.state]}.`
-                      : `선택한 AI: ${providers.join(', ')}. 실제 연결은 아직 하지 않았어요.`,
-                  );
-                  setStep(2);
-                }}
-              />
+              <>
+                {
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setInWorkspace(true);
+                      setView('features');
+                    }}
+                  >
+                    {features.length ? '저장한 기능 이어서 열기' : '기능 직접 정리하기'}
+                  </Button>
+                }
+                <ConnectionPage
+                  connectionSummary={connectionSummary}
+                  actualProject={Boolean(project?.desktopId)}
+                  onOpenAI={() => setShowAI(true)}
+                  providers={providers}
+                  onToggleProvider={(provider) => {
+                    setProviders((selected) =>
+                      selected.includes(provider)
+                        ? selected.filter((item) => item !== provider)
+                        : [...selected, provider],
+                    );
+                  }}
+                  protection={protection}
+                  onProtection={(draft) => {
+                    setProtection(draft);
+                    addActivity(
+                      'settings',
+                      '보호 설정안 저장',
+                      '실제 보호 적용 전의 설정안을 수정했어요.',
+                    );
+                  }}
+                  onBack={() => setStep(0)}
+                  onNext={() => {
+                    if (providers.length === 0) return;
+                    addActivity(
+                      'settings',
+                      'AI 도구 선택',
+                      aiStatus.id
+                        ? `선택한 AI: ${providers.join(', ')}. Codex 실행 상태: ${aiLabels[aiStatus.state]}.`
+                        : `선택한 AI: ${providers.join(', ')}. 실제 연결은 아직 하지 않았어요.`,
+                    );
+                    setStep(2);
+                  }}
+                />
+              </>
             )}
             {!inWorkspace && step === 2 && (
               <AnalysisPage
@@ -655,10 +669,11 @@ export default function App() {
             )}
             {!inWorkspace && step === 3 && (
               <ConfirmPage
-                features={features}
-                onEdit={setEditing}
+                features={features.filter((item) => item.kind === 'leaf')}
+                busy={planSaving}
+                onEdit={openEditor}
                 onToggle={(id) => void toggleFeature(id)}
-                onAdd={addFeature}
+                onAdd={() => addFeature()}
                 onBack={() => setStep(2)}
                 onNext={() => {
                   if (includedFeatures.length) {
@@ -678,15 +693,37 @@ export default function App() {
                 project={project}
                 features={includedFeatures}
                 records={records}
-                onOpen={(feature) => setOpenedFeature(feature.id)}
+                onOpen={(feature) => {
+                  if (!planSaveLock.current) setOpenedFeature(feature.id);
+                }}
                 onVerification={() => navigate('verification')}
+                onAdd={() => addFeature()}
+              />
+            )}
+            {inWorkspace && project && view === 'features' && (
+              <FeatureWorkspace
+                key={project.desktopId ?? project.path}
+                project={project}
+                plan={featurePlan}
+                busy={planSaving || aiBusy}
+                onEdit={openEditor}
+                onDelete={setDeleting}
                 onAdd={addFeature}
+                onLink={(feature, path) =>
+                  void saveFeature(
+                    { ...feature, relatedPaths: [...(feature.relatedPaths ?? []), path] },
+                    featurePlan.dependencies
+                      .filter((edge) => edge.featureId === feature.id)
+                      .map((edge) => edge.prerequisiteId),
+                  )
+                }
               />
             )}
             {inWorkspace && view === 'verification' && (
               <VerificationPage
                 features={includedFeatures}
                 records={records}
+                persisted={Boolean(project?.desktopId)}
                 onRecord={() => setVerifyFeature('')}
               />
             )}
@@ -710,15 +747,32 @@ export default function App() {
               <span>
                 <span className="tiny-logo">ORBIT</span>차근차근, 만드는 즐거움
               </span>
-              <span>기능·완료 조건·검증 결과는 프로젝트에 저장됩니다</span>
+              <span>
+                {project?.desktopId
+                  ? '기능·완료 조건·검증 결과는 프로젝트에 저장됩니다'
+                  : '예시 프로젝트의 내용은 이 창에서만 유지됩니다'}
+              </span>
             </footer>
           </div>
         </main>
       </div>
       {toast && (
-        <div className="toast" role="status">
-          <Icon name="check" size={17} />
-          {toast}
+        <div
+          className={`toast toast--${toast.tone}`}
+          data-tone={toast.tone}
+          role="status"
+          aria-live={toast.tone === 'error' ? 'assertive' : 'polite'}
+        >
+          <Icon
+            name={
+              toast.tone === 'success' ? 'check' : toast.tone === 'warning' ? 'warning' : 'error'
+            }
+            size={19}
+          />
+          <span className="sr-only">
+            {toast.tone === 'success' ? '성공: ' : toast.tone === 'warning' ? '주의: ' : '오류: '}
+          </span>
+          {toast.message}
         </div>
       )}
       {showAI && project && (
@@ -730,7 +784,11 @@ export default function App() {
         <FeatureEditor
           key={editing.id}
           feature={editing}
-          onClose={() => setEditing(null)}
+          plan={featurePlan}
+          busy={planSaving}
+          onClose={() => {
+            if (!planSaveLock.current) setEditing(null);
+          }}
           onSave={saveFeature}
         />
       )}
@@ -739,7 +797,8 @@ export default function App() {
           feature={currentFeature}
           onClose={() => setOpenedFeature(null)}
           onEdit={() => {
-            setEditing(currentFeature);
+            if (planSaveLock.current) return;
+            openEditor(currentFeature);
             setOpenedFeature(null);
           }}
           onVerify={() => {
@@ -752,27 +811,62 @@ export default function App() {
         <VerificationEditor
           features={includedFeatures}
           initialId={verifyFeature || undefined}
+          busy={planSaving}
           onSave={recordVerification}
-          onClose={() => setVerifyFeature(null)}
+          onClose={() => {
+            if (!planSaveLock.current) setVerifyFeature(null);
+          }}
         />
       )}
       {showRegenerate && (
-        <Modal title="저장한 기능 초안이 있어요" onClose={() => setShowRegenerate(false)}>
+        <Modal
+          title="저장한 기능 초안이 있어요"
+          busy={planSaving}
+          onClose={() => {
+            if (!planSaveLock.current) setShowRegenerate(false);
+          }}
+        >
           <p className="dialog-copy">
             직접 수정한 내용을 유지하거나, 현재 요구분석으로 새 예시 초안을 만들 수 있어요. 새로
-            만들면 기존 초안을 대체해요.
+            만들면 기존 기능·묶음·선행 관계와 검증 기록을 삭제하고 새 초안으로 대체해요.
           </p>
           <div className="modal-actions">
-            <Button variant="secondary" onClick={generateDrafts}>
+            <Button variant="secondary" disabled={planSaving} onClick={generateDrafts}>
               새 초안으로 바꾸기
             </Button>
             <Button
+              disabled={planSaving}
               onClick={() => {
                 setShowRegenerate(false);
                 setStep(3);
               }}
             >
               기존 초안 유지
+            </Button>
+          </div>
+        </Modal>
+      )}
+      {deleting && (
+        <Modal
+          title="기능을 삭제할까요?"
+          busy={planSaving}
+          onClose={() => {
+            if (!planSaveLock.current) setDeleting(null);
+          }}
+        >
+          <p className="dialog-copy">
+            <strong>{deleting.title}</strong>과 하위 항목을 포함한{' '}
+            {descendantIds(featurePlan, deleting.id).size}개 항목, 연결된 선행 관계와 검증 기록을
+            함께 삭제해요. 이 기능을 선행 조건으로 쓰던 기능은 재검증해야 해요. 실제 파일은 그대로
+            남아요.
+          </p>
+          {aiBusy && <p role="status">AI 실행을 중단하고 정리가 끝난 뒤 삭제해 주세요.</p>}
+          <div className="modal-actions">
+            <Button variant="ghost" disabled={planSaving} onClick={() => setDeleting(null)}>
+              삭제 취소
+            </Button>
+            <Button disabled={planSaving || aiBusy} onClick={() => void deleteFeature()}>
+              삭제 확정
             </Button>
           </div>
         </Modal>
@@ -842,8 +936,8 @@ export default function App() {
             </p>
             <h3>아직 연결되지 않은 것</h3>
             <p>
-              실제 AI 실행, 파일 접근 차단, 기기 간 전송, 종료 후 데이터 복원은 준비 중이에요. 입력
-              내용은 이 창에서만 유지돼요.
+              기능별 AI 실행, 파일 접근 차단, 기기 간 전송은 준비 중이에요. 실제 프로젝트의
+              기능·검증은 저장되며, 예시 프로젝트와 요구분석 입력은 이 창에서만 유지돼요.
             </p>
           </div>
           <div className="modal-actions">

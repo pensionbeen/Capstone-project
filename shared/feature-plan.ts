@@ -1,3 +1,5 @@
+import { validRelativePath } from './workspace-files.js';
+
 export type FeatureKind = 'group' | 'leaf';
 export interface StoredFeature {
   id: string;
@@ -9,6 +11,7 @@ export interface StoredFeature {
   included: boolean;
   revision: number;
   order: number;
+  relatedPaths?: string[];
 }
 export interface FeatureDependency {
   featureId: string;
@@ -81,9 +84,19 @@ export function validateFeaturePlan(value: unknown): value is ProjectFeaturePlan
       typeof item.included !== 'boolean' ||
       !Number.isSafeInteger(item.revision) ||
       item.revision < 1 ||
+      item.revision > 2147483647 ||
       !Number.isSafeInteger(item.order) ||
       item.order < 0 ||
       item.order > 10000
+    )
+      return false;
+    if (
+      item.relatedPaths !== undefined &&
+      (!Array.isArray(item.relatedPaths) ||
+        item.relatedPaths.length > 20 ||
+        item.relatedPaths.some((path) => !validRelativePath(path)) ||
+        new Set(item.relatedPaths.map((path) => path.toLowerCase())).size !==
+          item.relatedPaths.length)
     )
       return false;
     const siblingOrder = `${item.parentId ?? 'root'}:${item.order}`;
@@ -93,23 +106,18 @@ export function validateFeaturePlan(value: unknown): value is ProjectFeaturePlan
     if (item.kind === 'group' ? criteria.length !== 0 : criteria.length === 0) return false;
     byId.set(item.id, item);
   }
-  const visiting = new Set<string>(),
-    visited = new Set<string>();
-  const walkParent = (id: string, depth: number): boolean => {
-    if (depth > 16 || visiting.has(id)) return false;
-    if (visited.has(id)) return true;
+  const walkParent = (id: string, ancestors = new Set<string>()): boolean => {
+    if (ancestors.size >= 16 || ancestors.has(id)) return false;
     const item = byId.get(id);
     if (!item) return false;
-    visiting.add(id);
+    ancestors.add(id);
     if (item.parentId !== null) {
       const parent = byId.get(item.parentId);
-      if (parent?.kind !== 'group' || !walkParent(parent.id, depth + 1)) return false;
+      if (parent?.kind !== 'group' || !walkParent(parent.id, ancestors)) return false;
     }
-    visiting.delete(id);
-    visited.add(id);
     return true;
   };
-  for (const item of plan.features) if (!walkParent(item.id, 1)) return false;
+  for (const item of plan.features) if (!walkParent(item.id)) return false;
 
   const edges = new Map<string, string[]>();
   const edgeKeys = new Set<string>();
@@ -151,6 +159,7 @@ export function validateFeaturePlan(value: unknown): value is ProjectFeaturePlan
       !ID.test(item.id) ||
       verifications.has(item.id) ||
       !feature ||
+      feature.kind !== 'leaf' ||
       !text(item.featureTitle, 80, true) ||
       !Number.isSafeInteger(item.revision) ||
       item.revision < 1 ||
