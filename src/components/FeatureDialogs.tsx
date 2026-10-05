@@ -36,11 +36,15 @@ export function FeatureEditor({
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean);
-  const valid =
-    validFeature(draft) &&
-    relatedPaths.length <= 20 &&
-    relatedPaths.every((path) => validRelativePath(path)) &&
-    new Set(relatedPaths.map((path) => path.toLowerCase())).size === relatedPaths.length;
+  const pathError =
+    relatedPaths.length > 20
+      ? '관련 경로는 최대 20개까지 연결할 수 있어요.'
+      : relatedPaths.some((path) => !validRelativePath(path))
+        ? '프로젝트 안의 상대 경로를 확인해 주세요. 상위 이동·절대 경로·특수 경로는 사용할 수 없어요.'
+        : new Set(relatedPaths.map((path) => path.toLowerCase())).size !== relatedPaths.length
+          ? '같은 경로가 중복됐어요. 대소문자가 달라도 하나만 적어 주세요.'
+          : '';
+  const valid = validFeature(draft) && !pathError;
   return (
     <Modal
       title={
@@ -167,9 +171,7 @@ export function FeatureEditor({
               프로젝트 안의 경로를 /로 구분해 한 줄에 하나씩, 최대 20개 적어 주세요. 만들 예정인
               파일도 연결할 수 있어요.
             </p>
-            {paths && !valid && relatedPaths.some((path) => !validRelativePath(path)) && (
-              <p role="alert">상위 이동이나 절대 경로는 사용할 수 없어요.</p>
-            )}
+            {pathError && <p role="alert">{pathError}</p>}
           </div>
           <Notice>
             기능 내용·완료 조건·선행 관계·관련 경로를 바꾸면 이전 검증 결과는 이력으로 남고, 현재
@@ -293,6 +295,7 @@ export function VerificationEditor({
               value={featureId}
               onChange={(event) => {
                 setFeatureId(event.target.value);
+                setResult('passed');
                 setChecks([]);
                 setObservation('');
                 setEvidence('');

@@ -138,6 +138,9 @@ export function readAllFeaturePlans(db: DatabaseSync, projectIds: string[], with
 }
 
 export function writeFeaturePlan(db: DatabaseSync, projectId: string, plan: ProjectFeaturePlan) {
+  // Destructive replacement requires the caller's transaction, including deferred parent FKs.
+  if (!db.isTransaction)
+    throw new StorageError('저장 작업을 준비하지 못했어요. 기존 기능은 유지했어요.');
   if (!validateFeaturePlan(plan))
     throw new StorageError('기능·선행 관계·완료 조건·검증 기록을 확인해 주세요.');
   db.prepare('DELETE FROM features WHERE project_id = ?').run(projectId);

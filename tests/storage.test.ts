@@ -11,6 +11,7 @@ import {
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import { writeFeaturePlan } from '../dist/desktop/electron/storage/feature-plan-store.js';
 import { ProjectStore } from '../dist/desktop/electron/storage/project-store.js';
 import {
   emptyFeaturePlan,
@@ -29,6 +30,21 @@ function fixture() {
 }
 const hash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
 const dbOf = (store: ProjectStore) => (store as unknown as { db: DatabaseSync }).db;
+
+test('direct helper writes without a transaction preserve existing feature data', () => {
+  const f = fixture();
+  try {
+    const project = f.store.register(f.folder, true);
+    const before = f.store.saveFeaturePlan(project.id, samplePlan());
+    const childFirst = { ...before, features: [...before.features].reverse() };
+    assert.throws(() => writeFeaturePlan(dbOf(f.store), project.id, childFirst));
+    assert.deepEqual(f.store.featurePlan(project.id), before);
+    // The normal transaction also supports a child appearing before its parent.
+    assert.deepEqual(f.store.saveFeaturePlan(project.id, childFirst), before);
+  } finally {
+    f.store.close();
+  }
+});
 
 test('first schema/commit failure preserves an incomplete copy and a later launch can initialize', () => {
   mkdirSync('.runtime/storage-tests', { recursive: true });

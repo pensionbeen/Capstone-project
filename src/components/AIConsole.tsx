@@ -12,6 +12,7 @@ import { Badge, Button, Modal, Notice } from './ui';
 
 export function AIConsole({ project, onClose }: { project: Project; onClose: () => void }) {
   const outputRef = useRef<HTMLElement>(null);
+  const submissionVersion = useRef(0);
   const [availability, setAvailability] = useState<AIAvailability | null>(null);
   const [checking, setChecking] = useState(false);
   const [snapshot, setSnapshot] = useState<AISnapshot>(emptyAISnapshot);
@@ -106,6 +107,7 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
       return result;
     };
     const poll = async () => {
+      const version = submissionVersion.current;
       try {
         let next = await read(cursor);
         if (disposed) return;
@@ -130,7 +132,8 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
           cursor = chunk.sequence + 1;
         }
         if (!disposed) {
-          setSnapshot(next);
+          // A read started before an accepted submission must not restore the old run state.
+          if (version === submissionVersion.current) setSnapshot(next);
           setConnected(true);
           setRetryRequired(false);
           resize();
@@ -160,6 +163,7 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
     try {
       const result = await bridge.sendAIPrompt(projectId, input, snapshot.outputId, snapshot.id);
       if (result.ok) {
+        submissionVersion.current++;
         setInput('');
         setSnapshot((old) => ({
           ...old,

@@ -401,7 +401,10 @@ export default function App() {
     value: Omit<Verification, 'id' | 'createdAt' | 'featureTitle'>,
   ) {
     const feature = features.find((item) => item.id === value.featureId);
-    if (!feature || feature.revision !== value.revision) return;
+    if (!feature || feature.revision !== value.revision) {
+      setToast('기능이 바뀌어 검증 결과를 저장하지 못했어요. 현재 기능을 다시 확인해 주세요.');
+      return;
+    }
     const updated = [
       ...records,
       {

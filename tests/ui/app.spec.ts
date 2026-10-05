@@ -112,6 +112,7 @@ test('5단계 흐름과 보조 메뉴를 실제 Electron에서 사용할 수 있
       await expect(page.getByText('Codex · Gemini · 연결 전', { exact: true })).toBeVisible();
     }
     if (menu === '실행 이력') {
+      await page.getByRole('searchbox', { name: '이력 검색' }).fill('cOdEx');
       await expect(
         page.getByText('선택한 AI: Codex, Gemini. 실제 연결은 아직 하지 않았어요.').first(),
       ).toBeVisible();
@@ -226,6 +227,13 @@ test('검증 근거를 요구하고 조건 변경 뒤 과거 결과를 무효화
     'value',
     '25',
   );
+  await expect(
+    page
+      .getByRole('table', { name: '프로젝트 기능 목록' })
+      .getByRole('row')
+      .nth(2)
+      .getByText('다음', { exact: true }),
+  ).toBeVisible();
   await page.getByRole('button', { name: '할 일 추가·수정', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: '수정', exact: true }).click();
   await page.getByLabel('완료 조건', { exact: true }).fill('새 완료 조건');
@@ -320,6 +328,8 @@ test('보호·전송은 설정안과 미연결 상태를 유지하며 검색·�
   await page.getByLabel('보호할 파일·폴더').fill('.env\n설정/개인.json');
   await page.getByRole('button', { name: '설정안 저장' }).click();
   await expect(page.getByRole('status')).toContainText('아직 적용되지');
+  await page.getByRole('checkbox', { name: '읽기', exact: true }).uncheck();
+  await expect(page.locator('.protection-editor').getByRole('status')).toHaveCount(0);
   await page.getByRole('button', { name: '파일 전송', exact: true }).click();
   await expect(page.getByRole('button', { name: '전송 정보 확인' })).toBeDisabled();
   const file = resolve('.runtime', 'test-fixtures', '전송 예시.txt');

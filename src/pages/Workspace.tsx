@@ -144,7 +144,7 @@ export function OverviewPage({
             </tr>
           </thead>
           <tbody>
-            {visible.map((feature, index) => {
+            {visible.map((feature) => {
               const state = featureState(feature, records);
               return (
                 <tr className="feature-table-row" key={feature.id}>
@@ -158,9 +158,7 @@ export function OverviewPage({
                       </button>
                       <p>{feature.description}</p>
                     </div>
-                    {index === 0 && feature.id === next?.id && (
-                      <span className="first-tag">다음</span>
-                    )}
+                    {feature.id === next?.id && <span className="first-tag">다음</span>}
                   </td>
                   <td className="criteria-count">{criteriaLines(feature.criteria).length}개</td>
                   <td>
@@ -442,7 +440,8 @@ export function HistoryPage({ activities }: { activities: Activity[] }) {
   const [query, setQuery] = useState('');
   const visible = activities.filter(
     (item) =>
-      (filter === 'all' || item.kind === filter) && `${item.title} ${item.detail}`.includes(query),
+      (filter === 'all' || item.kind === filter) &&
+      `${item.title} ${item.detail}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
   );
   const labels = { feature: '기능', settings: '설정', verification: '검증' };
   return (
