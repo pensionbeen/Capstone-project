@@ -24,8 +24,13 @@ export function probeElectronVersion(file, { spawnChild = spawn, timeoutMs = 100
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       child.stdout.setEncoding('utf8').on('data', data => {
+        // Keep draining the pipe during cleanup without retaining rejected output.
+        if (killRequested || settled) return;
+        if (Buffer.byteLength(stdout) + Buffer.byteLength(data) > 4096) {
+          stop('ELECTRON_OUTPUT_LIMIT');
+          return;
+        }
         stdout += data;
-        if (Buffer.byteLength(stdout) > 4096) stop('ELECTRON_OUTPUT_LIMIT');
       });
       child.stderr.on('data', data => { stderrBytes += data.length; stop('ELECTRON_VERSION_STDERR'); });
       child.on('error', () => stop('ELECTRON_VERSION_SPAWN_ERROR'));

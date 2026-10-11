@@ -51,3 +51,14 @@ test('UTF-8 output remains intact when a character spans pipe chunks', async () 
   assert.equal(result.stdout, '한글 version\n');
   assert.equal(result.reason, null);
 });
+
+test('Output retained after overflow stays bounded even if the child ignores termination', async () => {
+  const child = fake(() => false);
+  const pending = probeElectronVersion('fixture', { spawnChild: () => child, cleanupMs: 10 });
+  child.stdout.write('version prefix');
+  for (let index = 0; index < 100; index++) child.stdout.write('x'.repeat(4096));
+  const result = await pending;
+  assert.equal(result.reason, 'ELECTRON_OUTPUT_LIMIT');
+  assert.equal(result.closeObserved, false);
+  assert.ok(Buffer.byteLength(result.stdout) <= 4096);
+});
