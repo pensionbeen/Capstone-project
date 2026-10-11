@@ -4,6 +4,21 @@ import {
   validateFeaturePlan,
 } from './feature-plan.js';
 
+export function needsReverification(
+  previous: StoredFeature,
+  next: StoredFeature,
+  oldPrerequisites: string[],
+  newPrerequisites: string[],
+) {
+  return (
+    previous.title !== next.title ||
+    previous.description !== next.description ||
+    previous.criteria !== next.criteria ||
+    JSON.stringify(previous.relatedPaths ?? []) !== JSON.stringify(next.relatedPaths ?? []) ||
+    JSON.stringify([...oldPrerequisites].sort()) !== JSON.stringify([...newPrerequisites].sort())
+  );
+}
+
 export function descendantIds(plan: ProjectFeaturePlan, id: string): Set<string> {
   const ids = new Set([id]);
   for (let changed = true; changed; ) {
@@ -57,12 +72,7 @@ export function updatePlanFeature(
       throw new Error('기능이 변경됐어요. 편집 창을 다시 열어 주세요.');
     // Inclusion is changed by its own action, not by this editor's snapshot.
     feature.included = previous.included;
-    const changed =
-      previous.title !== feature.title ||
-      previous.description !== feature.description ||
-      previous.criteria !== feature.criteria ||
-      JSON.stringify(previous.relatedPaths ?? []) !== JSON.stringify(feature.relatedPaths ?? []) ||
-      JSON.stringify(oldPrerequisites) !== JSON.stringify([...prerequisiteIds].sort());
+    const changed = needsReverification(previous, feature, oldPrerequisites, prerequisiteIds);
     feature.revision = previous.revision + (changed ? 1 : 0);
   } else feature.revision = 1;
   if (!previous || previous.parentId !== feature.parentId) {

@@ -7,6 +7,7 @@ import {
   validateFeaturePlan,
 } from '../shared/feature-plan';
 import type { ProjectCatalog } from '../shared/storage';
+import { canRecordVerification, nextVerificationTime } from '../shared/verification';
 import { FeatureEditor, VerificationEditor, WorkDetails } from './components/FeatureDialogs';
 import type { IconName } from './components/ui';
 import { Badge, Brand, Button, Icon, Modal } from './components/ui';
@@ -401,7 +402,11 @@ export default function App() {
     value: Omit<Verification, 'id' | 'createdAt' | 'featureTitle'>,
   ) {
     const feature = features.find((item) => item.id === value.featureId);
-    if (!feature || feature.revision !== value.revision) {
+    if (
+      !feature?.included ||
+      feature.revision !== value.revision ||
+      !canRecordVerification(feature, value)
+    ) {
       setToast('기능이 바뀌어 검증 결과를 저장하지 못했어요. 현재 기능을 다시 확인해 주세요.');
       return;
     }
@@ -411,7 +416,7 @@ export default function App() {
         ...value,
         featureTitle: feature.title,
         id: crypto.randomUUID(),
-        createdAt: new Date().toISOString(),
+        createdAt: nextVerificationTime(records),
       },
     ];
     if (!(await persistPlan({ ...featurePlan, verifications: updated }))) return;
@@ -724,7 +729,7 @@ export default function App() {
             )}
             {inWorkspace && view === 'verification' && (
               <VerificationPage
-                features={includedFeatures}
+                features={features}
                 records={records}
                 persisted={Boolean(project?.desktopId)}
                 onRecord={() => setVerifyFeature('')}
