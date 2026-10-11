@@ -62,7 +62,10 @@ export function ProtectionEditor({
             <input
               type="checkbox"
               checked={flags[key]}
-              onChange={(event) => setFlags({ ...flags, [key]: event.target.checked })}
+              onChange={(event) => {
+                setFlags({ ...flags, [key]: event.target.checked });
+                setMessage('');
+              }}
             />
             {{ read: '읽기', write: '수정', remove: '삭제' }[key]}
           </label>

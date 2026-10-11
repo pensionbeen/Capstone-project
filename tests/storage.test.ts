@@ -11,12 +11,13 @@ import {
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
+import { writeFeaturePlan } from '../dist/desktop/electron/storage/feature-plan-store.js';
 import { ProjectStore } from '../dist/desktop/electron/storage/project-store.js';
 import {
   emptyFeaturePlan,
   type ProjectFeaturePlan,
   validateFeaturePlan,
-} from '../shared/feature-plan.ts';
+} from '../dist/desktop/shared/feature-plan.js';
 
 function fixture() {
   mkdirSync('.runtime/storage-tests', { recursive: true });
@@ -29,6 +30,21 @@ function fixture() {
 }
 const hash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
 const dbOf = (store: ProjectStore) => (store as unknown as { db: DatabaseSync }).db;
+
+test('direct helper writes without a transaction preserve existing feature data', () => {
+  const f = fixture();
+  try {
+    const project = f.store.register(f.folder, true);
+    const before = f.store.saveFeaturePlan(project.id, samplePlan());
+    const childFirst = { ...before, features: [...before.features].reverse() };
+    assert.throws(() => writeFeaturePlan(dbOf(f.store), project.id, childFirst));
+    assert.deepEqual(f.store.featurePlan(project.id), before);
+    // The normal transaction also supports a child appearing before its parent.
+    assert.deepEqual(f.store.saveFeaturePlan(project.id, childFirst), before);
+  } finally {
+    f.store.close();
+  }
+});
 
 test('first schema/commit failure preserves an incomplete copy and a later launch can initialize', () => {
   mkdirSync('.runtime/storage-tests', { recursive: true });
@@ -446,11 +462,11 @@ test('v1 project database upgrades only after a v1 safety copy and v1 backup res
     f.store.close();
     const db = new DatabaseSync(f.path);
     db.exec(
-      'DROP TABLE verification_criteria; DROP TABLE verifications; DROP TABLE feature_dependencies; DROP TABLE features; PRAGMA user_version=1',
+      'DROP TABLE feature_paths; DROP TABLE verification_criteria; DROP TABLE verifications; DROP TABLE feature_dependencies; DROP TABLE features; PRAGMA user_version=1',
     );
     db.close();
     const v1 = new ProjectStore(f.directory);
-    assert.equal(dbOf(v1).prepare('PRAGMA user_version').get()?.user_version, 2);
+    assert.equal(dbOf(v1).prepare('PRAGMA user_version').get()?.user_version, 3);
     assert.deepEqual(
       v1.catalog().projects.map(({ id, name }) => ({ id, name })),
       [{ id: project.id, name: project.name }],
@@ -479,7 +495,7 @@ test('v1 migration failure leaves the live database unchanged and can retry', ()
     f.store.close();
     const db = new DatabaseSync(f.path);
     db.exec(
-      'DROP TABLE verification_criteria; DROP TABLE verifications; DROP TABLE feature_dependencies; DROP TABLE features; PRAGMA user_version=1',
+      'DROP TABLE feature_paths; DROP TABLE verification_criteria; DROP TABLE verifications; DROP TABLE feature_dependencies; DROP TABLE features; PRAGMA user_version=1',
     );
     db.close();
     const before = hash(f.path),
@@ -495,10 +511,64 @@ test('v1 migration failure leaves the live database unchanged and can retry', ()
     }
     assert.equal(hash(f.path), before);
     const recovered = new ProjectStore(f.directory);
-    assert.equal(dbOf(recovered).prepare('PRAGMA user_version').get()?.user_version, 2);
+    assert.equal(dbOf(recovered).prepare('PRAGMA user_version').get()?.user_version, 3);
     assert.equal(recovered.backups().length, 2);
     recovered.close();
   } finally {
     f.store.close();
   }
+});
+
+test('v2 migration preserves relations and verification, snapshots v2, persists paths and restores either backup version', () => {
+  const f = fixture();
+  const project = f.store.register(f.folder, true);
+  const original = samplePlan();
+  f.store.saveFeaturePlan(project.id, original);
+  f.store.close();
+  const db = new DatabaseSync(f.path);
+  db.exec('DROP TABLE feature_paths; PRAGMA user_version=2');
+  db.close();
+  const upgraded = new ProjectStore(f.directory);
+  try {
+    assert.equal(dbOf(upgraded).prepare('PRAGMA user_version').get()?.user_version, 3);
+    assert.deepEqual(upgraded.featurePlan(project.id), original);
+    const v2 = upgraded.backups()[0];
+    assert.ok(v2);
+    const pathPlan = structuredClone(original);
+    at(pathPlan.features, 1).relatedPaths = ['src/한글 파일.ts', '계획/없는 파일.md'];
+    assert.deepEqual(upgraded.saveFeaturePlan(project.id, pathPlan), pathPlan);
+    const v3 = upgraded.backup();
+    upgraded.restore(v2.id);
+    assert.deepEqual(upgraded.featurePlan(project.id), original);
+    upgraded.restore(v3.id);
+    assert.deepEqual(upgraded.featurePlan(project.id), pathPlan);
+  } finally {
+    upgraded.close();
+  }
+});
+
+test('v2 migration failure preserves original bytes and a later retry succeeds', () => {
+  const f = fixture();
+  const project = f.store.register(f.folder, true);
+  const plan = samplePlan();
+  f.store.saveFeaturePlan(project.id, plan);
+  f.store.close();
+  const db = new DatabaseSync(f.path);
+  db.exec('DROP TABLE feature_paths; PRAGMA user_version=2');
+  db.close();
+  const before = hash(f.path),
+    original = DatabaseSync.prototype.exec;
+  try {
+    DatabaseSync.prototype.exec = function (sql: string) {
+      if (sql.includes('PRAGMA user_version=3')) throw new Error('injected path migration failure');
+      return original.call(this, sql);
+    };
+    assert.throws(() => new ProjectStore(f.directory), /migration failure/);
+  } finally {
+    DatabaseSync.prototype.exec = original;
+  }
+  assert.equal(hash(f.path), before);
+  const recovered = new ProjectStore(f.directory);
+  assert.deepEqual(recovered.featurePlan(project.id), plan);
+  recovered.close();
 });

@@ -112,6 +112,7 @@ test('5단계 흐름과 보조 메뉴를 실제 Electron에서 사용할 수 있
       await expect(page.getByText('Codex · Gemini · 연결 전', { exact: true })).toBeVisible();
     }
     if (menu === '실행 이력') {
+      await page.getByRole('searchbox', { name: '이력 검색' }).fill('cOdEx');
       await expect(
         page.getByText('선택한 AI: Codex, Gemini. 실제 연결은 아직 하지 않았어요.').first(),
       ).toBeVisible();
@@ -164,6 +165,8 @@ test('renderer는 Node 권한 없이 제한된 폴더 선택 API만 가진다', 
       'saveProjectName',
       'loadFeaturePlan',
       'saveFeaturePlan',
+      'listProjectFiles',
+      'openProjectFile',
       'listProjectBackups',
       'backupProjects',
       'restoreProjects',
@@ -224,6 +227,13 @@ test('검증 근거를 요구하고 조건 변경 뒤 과거 결과를 무효화
     'value',
     '25',
   );
+  await expect(
+    page
+      .getByRole('table', { name: '프로젝트 기능 목록' })
+      .getByRole('row')
+      .nth(2)
+      .getByText('다음', { exact: true }),
+  ).toBeVisible();
   await page.getByRole('button', { name: '할 일 추가·수정', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: '수정', exact: true }).click();
   await page.getByLabel('완료 조건', { exact: true }).fill('새 완료 조건');
@@ -268,8 +278,29 @@ test('새 초안 생성 시 이전 기능의 검증을 재사용하지 않는다
     page.getByRole('button', { name: '학습 기록 추가·수정', exact: true }),
   ).toBeVisible();
   await page.getByRole('button', { name: /기능 검증/ }).click();
-  await expect(page.getByText('이전 조건의 결과')).toBeVisible();
-  await expect(page.getByRole('heading', { name: '할 일 추가·수정', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '아직 남긴 검증 결과가 없어요' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '할 일 추가·수정', exact: true })).toHaveCount(0);
+});
+
+test('프로젝트를 찾지 못한 알림은 성공 체크 대신 주의 표시를 쓴다', async () => {
+  const folder = resolve('.runtime', `toast-project-${randomUUID()}`);
+  await mkdir(folder, { recursive: true });
+  await app.evaluate(({ dialog, ipcMain }, folder) => {
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] });
+    const handlers = (
+      ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> }
+    )._invokeHandlers;
+    handlers.set('project:activate', () => ({
+      ok: false,
+      message: '저장된 프로젝트를 찾지 못했어요.',
+    }));
+  }, folder);
+  await page.getByRole('button', { name: '프로젝트 폴더 선택', exact: true }).click();
+  const toast = page.getByRole('status');
+  await expect(toast).toHaveAttribute('data-tone', 'warning');
+  await expect(toast).toContainText('주의: 저장된 프로젝트를 찾지 못했어요.');
+  await expect(toast.locator('svg path').first()).toHaveAttribute('d', 'M12 3 2 21h20L12 3Z');
+  await page.screenshot({ path: '.runtime/screens/17-warning-toast.png', fullPage: true });
 });
 
 test('편집한 초안을 요구분석 왕복으로 덮어쓰지 않고 빈 기능 확정을 막는다', async () => {
@@ -297,6 +328,8 @@ test('보호·전송은 설정안과 미연결 상태를 유지하며 검색·�
   await page.getByLabel('보호할 파일·폴더').fill('.env\n설정/개인.json');
   await page.getByRole('button', { name: '설정안 저장' }).click();
   await expect(page.getByRole('status')).toContainText('아직 적용되지');
+  await page.getByRole('checkbox', { name: '읽기', exact: true }).uncheck();
+  await expect(page.locator('.protection-editor').getByRole('status')).toHaveCount(0);
   await page.getByRole('button', { name: '파일 전송', exact: true }).click();
   await expect(page.getByRole('button', { name: '전송 정보 확인' })).toBeDisabled();
   const file = resolve('.runtime', 'test-fixtures', '전송 예시.txt');

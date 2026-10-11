@@ -459,6 +459,7 @@ export function AnalysisPage({
 
 export function ConfirmPage({
   features,
+  busy,
   onEdit,
   onToggle,
   onAdd,
@@ -466,6 +467,7 @@ export function ConfirmPage({
   onBack,
 }: {
   features: Feature[];
+  busy: boolean;
   onEdit: (feature: Feature) => void;
   onToggle: (id: string) => void;
   onAdd: () => void;
@@ -493,6 +495,7 @@ export function ConfirmPage({
               <input
                 type="checkbox"
                 checked={feature.included}
+                disabled={busy}
                 onChange={() => onToggle(feature.id)}
                 aria-label={`${feature.title} 포함`}
               />
@@ -519,6 +522,7 @@ export function ConfirmPage({
               type="button"
               className="icon-button"
               aria-label={`${feature.title} 수정`}
+              disabled={busy}
               onClick={() => onEdit(feature)}
             >
               <Icon name="edit" size={18} />
@@ -530,19 +534,19 @@ export function ConfirmPage({
         type="button"
         className="add-feature"
         onClick={onAdd}
-        disabled={features.length >= 30}
+        disabled={busy || features.length >= 100}
       >
         <Icon name="plus" size={18} />
         기능 직접 추가
       </button>
       <div className="step-footer">
-        <Button variant="ghost" onClick={onBack}>
+        <Button variant="ghost" onClick={onBack} disabled={busy}>
           요구분석으로 돌아가기
         </Button>
         <Button
           onClick={onNext}
           disabled={
-            !count || features.some((feature) => feature.included && !validFeature(feature))
+            busy || !count || features.some((feature) => feature.included && !validFeature(feature))
           }
           icon="arrow"
         >

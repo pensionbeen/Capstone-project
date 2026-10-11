@@ -29,3 +29,12 @@ test('CR and absolute column moves do not become line advances', async () => {
     } finally { screen.dispose(); }
   }
 });
+
+test('Automatic wrapping preserves spaces at the wrap boundary, including Korean', async () => {
+  const screen = new TerminalText(5, 12);
+  try {
+    screen.write('abc  def\r\n한글 뒤\r\n');
+    await waitUntil(() => screen.pending, count => count === 0);
+    assert.equal(screen.read(), 'abc  def\n한글 뒤\n');
+  } finally { screen.dispose(); }
+});

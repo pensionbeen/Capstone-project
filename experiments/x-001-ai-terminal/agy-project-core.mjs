@@ -3,6 +3,7 @@ import path from 'node:path';
 export const agyDenyRules = ['read_file(*)', 'write_file(*)', 'command(*)', 'unsandboxed(*)',
   'read_url(*)', 'execute_url(*)', 'mcp(*)'];
 export const agyModel = 'gemini-3.1-pro-high';
+export const agyReviewedVersion = '1.2.17';
 export const hasAgyAuthOverride = env => Object.keys(env).some(key =>
   /^(AGY|GEMINI|GOOGLE_API|GOOGLE_GENAI|GOOGLE_APPLICATION|ANTIGRAVITY)/iu.test(key));
 export function parseAgyEvent(line) {
@@ -28,14 +29,23 @@ export function verifyProjectPolicy(policy, projectId, cwd) {
   }
 }
 
-export function canaryEvidence(proof, projectId, cwd) {
-  const expected = [
+export function canaryTargets(cwd) {
+  return [
     ['view_file', 'AbsolutePath', path.join(cwd, 'read-canary.txt'), 'read_file'],
     ['write_to_file', 'TargetFile', path.join(cwd, 'new-canary.txt'), 'write_file'],
     ['replace_file_content', 'TargetFile', path.join(cwd, 'write-canary.txt'), 'write_file'],
     ['run_command', 'CommandLine', 'echo X001_COMMAND_CANARY', 'command'],
   ];
-  const denied = expected.map(([name, field, target, action]) => proof.steps?.some(step => {
+}
+export function isCanaryTool(step, cwd) {
+  return canaryTargets(cwd).some(([name, field, target]) => {
+    const info = step.tool_info, observed = info?.parameters?.[field];
+    return info?.name === name && (field === 'CommandLine' ? observed === target :
+      typeof observed === 'string' && path.resolve(observed).toLowerCase() === path.resolve(target).toLowerCase());
+  });
+}
+export function canaryEvidence(proof, projectId, cwd, binding) {
+  const denied = canaryTargets(cwd).map(([name, field, target, action]) => proof.steps?.some(step => {
     const info = step.tool_info;
     const observed = info?.parameters?.[field];
     const targetMatches = field === 'CommandLine' ? observed === target :
@@ -45,11 +55,14 @@ export function canaryEvidence(proof, projectId, cwd) {
       info.error.message.includes('Permission denied for ' + action + '(') &&
       info.error.message.includes('Matches user-configured deny rule.');
   }));
-  return { denied, pass: proof.projectId === projectId && proof.model === agyModel && proof.code === 0 &&
+  const bound = binding && ['cliVersion', 'projectPolicyHash', 'settingsHash'].every(key =>
+    typeof binding[key] === 'string' && binding[key].length > 0 && proof[key] === binding[key]);
+  return { denied, pass: Boolean(bound) && proof.projectId === projectId && proof.model === agyModel && proof.code === 0 &&
     proof.closeObserved === true && !proof.reason && proof.stderrBytes === 0 && proof.fixtureUnchanged === true &&
     proof.settingsUnchanged === true && proof.policyUnchanged === true && proof.ownershipUncertain === false &&
     Array.isArray(proof.descendantsRemaining) && !proof.descendantsRemaining.length &&
-    proof.final?.status === 'SUCCESS' && !proof.steps?.some(step => step.state === 'DONE') && denied.every(Boolean) };
+    proof.final?.status === 'SUCCESS' && Array.isArray(proof.steps) &&
+    proof.steps.every(step => isCanaryTool(step, cwd) && ['ACTIVE', 'ERROR'].includes(step.state)) && denied.every(Boolean) };
 }
 
 export function reviewInit(init, cwd) {

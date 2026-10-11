@@ -232,6 +232,113 @@ test('앱 내부 연결 끊김·다시 연결과 실패한 화면 크기 재적�
   expect(projects?.projects).toHaveLength(1);
 });
 
+test('크기 응답 대기 중 연속 변경해도 마지막 터미널 크기가 반영된다', async () => {
+  await fixture();
+  await openConversation();
+  await expect(page.getByRole('button', { name: '연결 준비 다시 확인' })).toBeEnabled();
+  await page.locator('.ai-terminal').evaluate((element) => {
+    element.style.width = '600px';
+  });
+  await expect
+    .poll(() => page.locator('.xterm-screen').evaluate((element) => element.clientWidth))
+    .toBeLessThan(600);
+  // Let the initial fit/IPC finish before delaying the next user resize.
+  await page.waitForTimeout(400);
+  await app.evaluate(({ ipcMain }) => {
+    const handlers = (
+      ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> }
+    )._invokeHandlers;
+    const original = handlers.get('ai:resize');
+    if (!original) throw new Error('AI resize handler missing');
+    const trace = { calls: [] as number[][], release: () => {} };
+    Reflect.set(globalThis, 'pendingResizeTrace', trace);
+    handlers.set('ai:resize', async (...args: unknown[]) => {
+      trace.calls.push([Number(args[2]), Number(args[3])]);
+      if (trace.calls.length === 1) await new Promise<void>((resolve) => (trace.release = resolve));
+      return original(...args);
+    });
+  });
+  await page.locator('.ai-terminal').evaluate((element) => {
+    element.style.width = '560px';
+  });
+  await expect
+    .poll(() => app.evaluate(() => Reflect.get(globalThis, 'pendingResizeTrace').calls.length))
+    .toBe(1);
+  const firstCols = await app.evaluate(
+    () => Reflect.get(globalThis, 'pendingResizeTrace').calls[0][0],
+  );
+  const firstWidth = await page.locator('.xterm-screen').evaluate((element) => element.clientWidth);
+  await page.locator('.ai-terminal').evaluate((element) => {
+    element.style.width = '320px';
+  });
+  await expect
+    .poll(() => page.locator('.xterm-screen').evaluate((element) => element.clientWidth))
+    .toBeLessThan(firstWidth * 0.7);
+  await page.locator('.ai-terminal').evaluate((element) => {
+    element.style.width = '480px';
+  });
+  await expect
+    .poll(() => page.locator('.xterm-screen').evaluate((element) => element.clientWidth))
+    .toBeGreaterThan(firstWidth * 0.7);
+  const finalWidth = await page.locator('.xterm-screen').evaluate((element) => element.clientWidth);
+  const expectedCols = Math.round((finalWidth * firstCols) / firstWidth);
+  expect(expectedCols).toBeLessThan(firstCols);
+  expect(await app.evaluate(() => Reflect.get(globalThis, 'pendingResizeTrace').calls.length)).toBe(
+    1,
+  );
+  await app.evaluate(() => Reflect.get(globalThis, 'pendingResizeTrace').release());
+  await expect
+    .poll(() =>
+      app.evaluate(async (_electron, url) => {
+        const require = process.getBuiltinModule('module').createRequire(url);
+        return require(url.replace('file:///', '')).aiSession.cols;
+      }, managerUrl),
+    )
+    .toBe(expectedCols);
+});
+
+test('전송 전의 늦은 상태 응답은 새 실행 표시를 되돌리지 않는다', async () => {
+  await fixture();
+  await openConversation();
+  await page.getByRole('textbox', { name: 'Codex에게 보낼 메시지' }).fill('순서 검사');
+  await expect(page.getByRole('button', { name: '메시지 보내기' })).toBeEnabled();
+  await app.evaluate(({ ipcMain }) => {
+    const handlers = (
+      ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> }
+    )._invokeHandlers;
+    const original = handlers.get('ai:read');
+    if (!original) throw new Error('AI read handler missing');
+    let captured = false;
+    handlers.set('ai:submit', () => ({ ok: true }));
+    handlers.set('ai:read', async (...args: unknown[]) => {
+      const value = await original(...args);
+      return new Promise((resolve) => {
+        const key = captured ? 'releaseFreshAIRead' : 'releaseStaleAIRead';
+        captured = true;
+        Reflect.set(globalThis, key, () => resolve(value));
+      });
+    });
+    Reflect.set(globalThis, 'restoreAIRead', () => handlers.set('ai:read', original));
+  });
+  await expect
+    .poll(() => app.evaluate(() => typeof Reflect.get(globalThis, 'releaseStaleAIRead')))
+    .toBe('function');
+  await page.getByRole('button', { name: '메시지 보내기' }).click();
+  await expect(page.locator('.ai-run-status')).toContainText('Codex 실행을 준비');
+  await app.evaluate(() => Reflect.get(globalThis, 'releaseStaleAIRead')());
+  await expect
+    .poll(() => app.evaluate(() => typeof Reflect.get(globalThis, 'releaseFreshAIRead')))
+    .toBe('function');
+  await expect(page.locator('.ai-run-status')).toContainText('Codex 실행을 준비');
+  await expect(page.getByRole('button', { name: '실행 중단', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '메시지 보내기' })).toHaveCount(0);
+  await app.evaluate(() => {
+    Reflect.get(globalThis, 'restoreAIRead')();
+    Reflect.get(globalThis, 'releaseFreshAIRead')();
+  });
+  await expect(page.getByRole('button', { name: '메시지 보내기' })).toBeVisible();
+});
+
 test('실제 Codex 연결: 중단·앱 종료', async () => {
   test.skip(
     process.env.ORBIT_LIVE_AI !== '1',

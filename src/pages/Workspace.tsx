@@ -95,7 +95,7 @@ export function OverviewPage({
           type="button"
           className="text-button"
           onClick={onAdd}
-          disabled={features.length >= 30}
+          disabled={features.length >= 100}
         >
           <Icon name="plus" size={16} />
           기능 추가
@@ -144,7 +144,7 @@ export function OverviewPage({
             </tr>
           </thead>
           <tbody>
-            {visible.map((feature, index) => {
+            {visible.map((feature) => {
               const state = featureState(feature, records);
               return (
                 <tr className="feature-table-row" key={feature.id}>
@@ -158,9 +158,7 @@ export function OverviewPage({
                       </button>
                       <p>{feature.description}</p>
                     </div>
-                    {index === 0 && feature.id === next?.id && (
-                      <span className="first-tag">다음</span>
-                    )}
+                    {feature.id === next?.id && <span className="first-tag">다음</span>}
                   </td>
                   <td className="criteria-count">{criteriaLines(feature.criteria).length}개</td>
                   <td>
@@ -204,10 +202,12 @@ export function VerificationPage({
   features,
   records,
   onRecord,
+  persisted,
 }: {
   features: Feature[];
   records: Verification[];
   onRecord: () => void;
+  persisted: boolean;
 }) {
   const summary = progress(features, records);
   return (
@@ -229,7 +229,7 @@ export function VerificationPage({
           </strong>
           <p>조건이 바뀌면 이전 결과를 보존하고 다시 검증해요.</p>
         </div>
-        <Badge>이 창의 기록</Badge>
+        <Badge>{persisted ? '프로젝트에 저장한 기록' : '이 창의 기록'}</Badge>
       </div>
       {records.length ? (
         <div className="verification-records">
@@ -267,7 +267,9 @@ export function VerificationPage({
         />
       )}
       <Notice>
-        현재 기록은 화면을 확인하기 위한 임시 데이터예요. 창을 닫거나 새로고침하면 사라져요.
+        {persisted
+          ? '검증 기록은 프로젝트에 저장돼요. 기능 내용이나 조건을 바꾸면 이전 기록을 보존하고 다시 검증해야 해요.'
+          : '예시 프로젝트의 기록은 이 창에서만 유지돼요. 창을 닫거나 새로고침하면 사라져요.'}
       </Notice>
     </section>
   );
@@ -438,7 +440,8 @@ export function HistoryPage({ activities }: { activities: Activity[] }) {
   const [query, setQuery] = useState('');
   const visible = activities.filter(
     (item) =>
-      (filter === 'all' || item.kind === filter) && `${item.title} ${item.detail}`.includes(query),
+      (filter === 'all' || item.kind === filter) &&
+      `${item.title} ${item.detail}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()),
   );
   const labels = { feature: '기능', settings: '설정', verification: '검증' };
   return (

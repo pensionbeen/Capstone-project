@@ -1,5 +1,7 @@
 # T-004 로컬 연결·인증
 
+**T-007 후속 (WL-20261011-01):** SQLite v3 기능/경로는 main의 `features:load/save`, `files:list/open` 고정 IPC를 사용한다. 정확한 앱 창·최상위 프레임과 인자를 검사하며 등록된 프로젝트 ID와 상대 경로만 받는다. 실제 root는 DB에서 읽는다. 계획 변경은 실행·정리 미확인·대기 중인 AI 요청·다른 저장 중 차단한다. `project:activate/save-name`은 저장된 실제 프로젝트 ID와 plan을 함께 반환한다. REST/WS에 임의 SQL·외부 명령 접점을 추가하지 않았다. [저장 계약](PROJECT_STORAGE.md)·[검토표](reviews/2026-10-11-gemini.md).
+
 **후속 T-005 완료:** 실제 앱의 프로젝트 조회는 SQLite 목록과 `activeProjectId`, `storage: 'sqlite'`를 반환한다. 저장 시작 실패는 `unavailable`로 구분한다. main의 고정 IPC로 확정 선택·이름 저장·백업/복원을 추가했고 프로젝트 상한은 100개·직렬화 목록 512 KiB다. [저장 계약](PROJECT_STORAGE.md)·WL-20261005-01을 따른다. 아래 메모리/16개·검사 수는 T-004 당시 이력이다.
 
 기록 **WL-20261004-06**, 브랜치 `feat/t-004-local-api`. 선행 T-003의 `b246d27b18146c05da8c183553dfcdd71a66653f`에서 분기했다. 소스 커밋은 `252fbe23d211b96932fcd7ff9f7d13c3cc0dd5ce`다. T-004 완료이며 DB 저장·앱 재시작 복원은 T-005다.

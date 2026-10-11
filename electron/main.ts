@@ -20,6 +20,7 @@ import { SessionManager } from './ai/session-manager.js';
 import { LocalApiClient } from './local-api/client.js';
 import { startLocalApi } from './local-api/server.js';
 import { APP_URL, DEV_URL, inspectDirectory, isTrustedPage, staticAssetPath } from './policy.js';
+import { ProjectFiles } from './project-files.js';
 import { ProjectStore, storageMessage, validProjectName } from './storage/project-store.js';
 
 const currentDirectory = fileURLToPath(new URL('.', import.meta.url));
@@ -30,6 +31,7 @@ let selecting = false;
 let allowExit = false;
 let closing: Promise<void> | undefined;
 export const aiSession = new SessionManager();
+export const projectFiles = new ProjectFiles();
 let localApi: Awaited<ReturnType<typeof startLocalApi>> | undefined;
 let apiClient: LocalApiClient | undefined;
 let projectStore: ProjectStore | undefined;
@@ -270,12 +272,36 @@ void app.whenReady().then(async () => {
     const [id, plan] = args;
     if (!trusted(event) || args.length !== 2 || !projectArgument(id) || !projectStore)
       return { ok: false, message: '저장할 기능 계획을 확인해 주세요.' };
+    if (!mayChangeProjects())
+      return { ok: false, message: 'AI 실행을 중단하고 정리가 끝난 뒤 기능을 변경해 주세요.' };
     try {
       return { ok: true, plan: projectStore.saveFeaturePlan(id, plan as ProjectFeaturePlan) };
     } catch (error) {
       return { ok: false, message: storageMessage(error) };
     }
   });
+  for (const action of ['list', 'open'] as const) {
+    ipcMain.handle(`files:${action}`, async (event, ...args: unknown[]) => {
+      const [id, path] = args;
+      if (
+        !trusted(event) ||
+        args.length !== 2 ||
+        !projectArgument(id) ||
+        typeof path !== 'string' ||
+        !projectStore ||
+        closing
+      )
+        return { ok: false, message: '프로젝트와 파일 경로를 확인해 주세요.' };
+      try {
+        const project = projectStore.project(id);
+        return action === 'list'
+          ? await projectFiles.list(project.path, path)
+          : await projectFiles.open(project.path, path);
+      } catch {
+        return { ok: false, message: '프로젝트 폴더를 다시 선택해 주세요.' };
+      }
+    });
+  }
   for (const action of ['activate', 'save-name'] as const) {
     ipcMain.handle(`project:${action}`, (event, ...args: unknown[]): ProjectResult => {
       const [id, name] = args;
@@ -298,7 +324,7 @@ void app.whenReady().then(async () => {
           : projectStore.activate(id, action === 'save-name' ? (name as string) : undefined);
         pendingFolders.delete(id);
         syncProjects();
-        return { ok: true, project };
+        return { ok: true, project, plan: projectStore.featurePlan(project.id) };
       } catch (error) {
         return { ok: false, message: storageMessage(error) };
       }

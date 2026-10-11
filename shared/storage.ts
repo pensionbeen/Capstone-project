@@ -15,7 +15,9 @@ export interface ProjectBackup {
   id: string;
   createdAt: number;
 }
-export type ProjectResult = { ok: true; project: LocalProject } | { ok: false; message: string };
+export type ProjectResult =
+  | { ok: true; project: LocalProject; plan: ProjectFeaturePlan }
+  | { ok: false; message: string };
 export type StorageResult =
   | { ok: true; message: string; catalog?: ProjectCatalog }
   | { ok: false; message: string };
