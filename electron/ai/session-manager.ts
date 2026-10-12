@@ -418,10 +418,8 @@ export class SessionManager {
     return { ok: true, runId: this.state.id ?? undefined, outputId: this.output.id };
   }
   stop(projectId: string): AIReply {
-    if (this.pendingFeature?.projectId === projectId) {
-      this.pendingFeature.cancelled = true;
-      return { ok: true, message: '기능 대화 준비를 취소했어요.' };
-    }
+    // Preparation has no new run ID yet. A stop can only target a published active turn.
+    // shutdown cancels preparation directly; an older turn's stop must not cancel it.
     if (projectId !== this.projectId || !activeAIStates.includes(this.state.state))
       return rejected('현재 실행 중인 대화가 없어요.');
     this.stopRequested = true;

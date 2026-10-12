@@ -315,20 +315,23 @@ test('경로 검사 뒤 output ID와 run ID를 다시 대조한다', async () =>
   }
 });
 
-test('준비 중 중단·앱 종료는 예약을 취소하고 뒤늦은 검사 성공으로 실행하지 않는다', async () => {
+test('준비 중 일반 중단은 거부하고 앱 종료는 예약을 취소한다', async () => {
   for (const action of ['stop', 'shutdown'] as const) {
     const gate = deferred();
     const f = await fixture({ check: () => gate.promise });
     const pending = f.send();
-    if (action === 'stop') assert.equal(f.manager.stop(f.id).ok, true);
+    if (action === 'stop') assert.equal(f.manager.stop(f.id).ok, false);
     const shutdown = action === 'shutdown' ? f.manager.shutdown() : undefined;
     gate.resolve();
     const reply = await pending;
-    assert.equal(reply.ok, false);
-    assert.match(reply.message ?? '', /취소/u);
-    assert.equal(f.calls.length, 0);
+    assert.equal(reply.ok, action === 'stop');
+    await settled(f.manager);
+    assert.equal(f.calls.length, action === 'stop' ? 1 : 0);
     assert.equal(f.manager.busy, false);
-    if (shutdown) assert.equal(await shutdown, true);
+    if (shutdown) {
+      assert.match(reply.message ?? '', /취소/u);
+      assert.equal(await shutdown, true);
+    }
   }
 });
 

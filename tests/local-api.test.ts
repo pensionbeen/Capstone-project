@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { mkdir, mkdtemp } from 'node:fs/promises';
 import { request } from 'node:http';
+import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 import { OutputBuffer } from '../dist/desktop/electron/ai/contracts.js';
+import { SessionManager } from '../dist/desktop/electron/ai/session-manager.js';
 import { LocalApiClient } from '../dist/desktop/electron/local-api/client.js';
 import { type SessionBackend, startLocalApi } from '../dist/desktop/electron/local-api/server.js';
 import { emptyAISnapshot } from '../shared/ai.ts';
+import type { StoredFeature } from '../shared/feature-plan.ts';
 
 function fixture() {
   const id = randomUUID();
@@ -698,4 +702,104 @@ test('기능 대화 비동기 검사 중 같은 요청 ID 재전송은 진행 �
   const replay = await http(service, path, { body: JSON.stringify(body), headers: requestHeaders });
   assert.deepEqual(replay.data, initial.data);
   assert.equal(calls, 1);
+});
+
+test('인증 REST: 같은 프로젝트의 이전 runId 중단은 새 기능 준비를 취소하지 않는다', async (t) => {
+  await mkdir('.runtime/stale-stop-tests', { recursive: true });
+  const root = await mkdtemp(resolve('.runtime/stale-stop-tests/case-'));
+  const feature: StoredFeature = {
+    id: randomUUID(),
+    parentId: null,
+    kind: 'leaf',
+    title: '준비 중인 기능',
+    description: '',
+    criteria: '준비 뒤 새 실행을 시작한다.',
+    included: true,
+    revision: 1,
+    order: 0,
+    relatedPaths: [],
+  };
+  let release!: () => void;
+  let enter!: () => void;
+  const gate = new Promise<void>((done) => {
+    release = done;
+  });
+  const entered = new Promise<void>((done) => {
+    enter = done;
+  });
+  let prepared = 0;
+  const manager = new SessionManager({
+    loadFeature: () => feature,
+    checkFeaturePaths: async () => {
+      enter();
+      await gate;
+    },
+    // Finish each accepted turn before spawning any process; only HTTP is real here.
+    prepare: async () => {
+      prepared++;
+      throw new Error('SYNTHETIC_NO_PROCESS');
+    },
+  });
+  const id = manager.registerProject(root);
+  assert.ok(id);
+  const service = await startLocalApi(manager, 'orbit://app');
+  t.after(async () => {
+    release();
+    await manager.shutdown();
+    await service.close();
+  });
+  const settled = async () => {
+    const deadline = Date.now() + 3000;
+    while (manager.busy && Date.now() < deadline) await delay(5);
+    assert.equal(manager.busy, false);
+  };
+  assert.equal(
+    (
+      await http(service, `/v1/projects/${id}/session/submit`, {
+        body: JSON.stringify({
+          prompt: '이전 실행 A',
+          expectedOutputId: null,
+          expectedRunId: null,
+        }),
+      })
+    ).status,
+    200,
+  );
+  await settled();
+  const previous = manager.read(id, 0);
+  assert.equal(previous.state, 'error');
+  assert.equal(previous.cleanupConfirmed, true);
+  assert.ok(previous.id);
+  assert.equal(prepared, 1);
+
+  const pending = http(service, `/v1/projects/${id}/session/feature`, {
+    body: JSON.stringify({
+      action: 'start',
+      featureId: feature.id,
+      expectedRevision: 1,
+      input: '',
+      expectedOutputId: previous.outputId,
+      expectedRunId: previous.id,
+    }),
+  });
+  await entered;
+  assert.equal(manager.busy, true);
+  assert.equal(manager.read(id, 0).id, previous.id);
+  let stop: Awaited<ReturnType<typeof http>>;
+  try {
+    stop = await http(service, `/v1/projects/${id}/session/stop`, {
+      body: JSON.stringify({ expectedRunId: previous.id }),
+    });
+  } finally {
+    release();
+  }
+  const started = await pending;
+  await settled();
+  t.diagnostic(
+    `previous=${previous.state}, oldStopHTTP=${stop.status}, nextStartHTTP=${started.status}, driverCalls=${prepared}`,
+  );
+  assert.equal(stop.status, 409, '이전 실행의 중단 요청을 새 준비에 적용하면 안 된다.');
+  assert.equal(started.status, 200, '오래된 중단 요청 뒤에도 새 준비는 계속되어야 한다.');
+  assert.notEqual(manager.read(id, 0).id, previous.id);
+  assert.equal(prepared, 2);
 });
