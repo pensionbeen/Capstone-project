@@ -9,6 +9,8 @@
 3. 맡은 작업 ID를 [TASKS](docs/TASKS.md)에서 읽고 선행 조건·완료 조건을 확인한다.
 4. 같은 작업 폴더의 수정 담당 AI는 하나다. 다른 사람의 미커밋 변경은 보존한다.
 
+2026-10-12 최신 사용자 지시: 개발은 여러 Codex가 별도 worktree·브랜치에서 병렬 수행하고 검토는 Gemini가 읽기 전용으로 맡는다. 총괄 Codex가 범위·공통 인터페이스·의존 순서·수정권을 배정하고 회수·통합 검증·노션/공통 기록을 책임진다. [병렬 분담](docs/PARALLEL_DEVELOPMENT.md)을 따른다. 같은 폴더 동시 수정·main 병합은 금지하며 기존 기능 단위 push 규칙은 유지한다.
+
 ## 작업별 참조
 
 - 요구사항·범위·출처: [PROJECT_OVERVIEW](docs/PROJECT_OVERVIEW.md)

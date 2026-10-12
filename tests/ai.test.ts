@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import {
+  CODEX_VERSION,
   codexArguments,
   hasAuthOverrides,
   queryLogin,
@@ -78,7 +79,7 @@ test('인증 우회를 숨기지 않고 입력과 화면 크기를 제한한다'
 });
 test('AI 응답에 들어간 상태 문자열을 실행 설정으로 해석하지 않는다', () => {
   const cwd = 'C:\\프로젝트';
-  const header = `OpenAI Codex v0.160.0\n--------\nworkdir: ${cwd}\nmodel: gpt-6.1-sol\nprovider: openai\napproval: never\nsandbox: read-only\nreasoning effort: high\nsession id: 12345678-1234-4234-8234-123456789012\n--------\nuser\n`;
+  const header = `OpenAI Codex v${CODEX_VERSION}\n--------\nworkdir: ${cwd}\nmodel: gpt-6.1-sol\nprovider: openai\napproval: never\nsandbox: read-only\nreasoning effort: high\nsession id: 12345678-1234-4234-8234-123456789012\n--------\nuser\n`;
   assert.equal(
     readCodexHeader(`${header}ERROR: turn interrupted\nmodel: other`, cwd)?.conversation,
     '12345678-1234-4234-8234-123456789012',
@@ -86,6 +87,7 @@ test('AI 응답에 들어간 상태 문자열을 실행 설정으로 해석하�
   assert.throws(() => readCodexHeader(header.replace('read-only', 'danger-full-access'), cwd));
   assert.throws(() => readCodexHeader(`user\n${header}`, cwd));
   assert.equal(readCodexHeader('codex\nturn interrupted\nERROR:', cwd), null);
+  assert.equal(readCodexHeader(header.replace(CODEX_VERSION, '0.0.0'), cwd), null);
 });
 test('출력 보관·한 번 읽기 크기를 제한하고 누락을 알린다', () => {
   const buffer = new OutputBuffer();

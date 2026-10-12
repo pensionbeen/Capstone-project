@@ -1,6 +1,7 @@
 import type { AIAvailability, AIReply, AISnapshot } from './ai.js';
 import type { ProjectFeaturePlan } from './feature-plan.js';
 import type { ConnectionFailure } from './local-api.js';
+import type { RequirementsAction } from './requirements.js';
 import type {
   FeaturePlanResult,
   ProjectBackup,
@@ -32,6 +33,13 @@ export interface DesktopBridge {
   sendAIPrompt: (
     projectId: string,
     prompt: string,
+    expectedOutputId: string | null,
+    expectedRunId: string | null,
+  ) => Promise<AIReply>;
+  sendRequirementsPrompt: (
+    projectId: string,
+    action: RequirementsAction,
+    input: string,
     expectedOutputId: string | null,
     expectedRunId: string | null,
   ) => Promise<AIReply>;

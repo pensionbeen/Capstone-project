@@ -34,6 +34,17 @@ function fixture() {
       state = { ...state, id: randomUUID(), state: 'running' };
       return { ok: true };
     },
+    requirements: (_id, _action, input) => {
+      submissions++;
+      state = {
+        ...state,
+        id: randomUUID(),
+        state: 'running',
+        purpose: 'requirements',
+        requirementsGoal: input,
+      };
+      return { ok: true, runId: state.id ?? undefined, outputId: output.id };
+    },
     stop: () => {
       stops++;
       state = { ...state, state: 'interrupted' };
@@ -166,6 +177,69 @@ test('실제 REST: 메모리 프로젝트 조회, 인증·Origin·Host·미등�
     200,
     'unauthenticated traffic cannot spend the authenticated request budget',
   );
+});
+
+test('요구분석 REST는 인증·형식·중복·오래된 대화 요청을 구분한다', async (t) => {
+  const f = fixture();
+  const service = await startLocalApi(f.backend, 'orbit://app');
+  t.after(() => service.close());
+  const path = `/v1/projects/${f.id}/session/requirements`;
+  const draft = {
+    action: 'start',
+    input: '학생을 위한 앱',
+    expectedOutputId: f.output.id,
+    expectedRunId: null,
+  };
+  for (const invalid of [
+    { ...draft, action: 'execute' },
+    { ...draft, input: '' },
+    { ...draft, input: '가'.repeat(6001) },
+    { ...draft, cwd: 'C:\\private' },
+    { ...draft, expectedRunId: 'invalid' },
+  ])
+    assert.equal((await http(service, path, { body: JSON.stringify(invalid) })).status, 400);
+  assert.equal(
+    (
+      await http(service, path, {
+        body: JSON.stringify(draft),
+        headers: { Authorization: undefined },
+      })
+    ).status,
+    401,
+  );
+  assert.equal(f.submissions, 0);
+  const requestHeaders = headers(service);
+  const first = await http(service, path, { body: JSON.stringify(draft), headers: requestHeaders });
+  assert.equal(first.status, 200);
+  const duplicate = await http(service, path, {
+    body: JSON.stringify(draft),
+    headers: requestHeaders,
+  });
+  assert.deepEqual(duplicate.data, first.data);
+  assert.equal(f.submissions, 1);
+  assert.equal((await http(service, path, { body: JSON.stringify(draft) })).status, 409);
+  assert.equal(
+    (
+      await http(service, path, {
+        body: JSON.stringify({ ...draft, input: '변경' }),
+        headers: requestHeaders,
+      })
+    ).status,
+    409,
+  );
+  const client = new LocalApiClient(service.endpoint);
+  t.after(() => client.close());
+  const state = f.backend.read(f.id, 0);
+  const result = await client.command(f.id, 'requirements', {
+    action: 'answer',
+    input: '한글 답변',
+    expectedOutputId: state.outputId,
+    expectedRunId: state.id,
+  });
+  assert.equal(result.ok, true);
+  assert.ok(result.runId);
+  assert.equal(result.outputId, state.outputId);
+  assert.equal(f.submissions, 2);
 });
 
 test('실제 REST: 잘못된 입력·과대 본문·중복 실행·세대 충돌·오래된 요청 거부', async (t) => {

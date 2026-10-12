@@ -18,6 +18,15 @@ const desktop: DesktopBridge = {
   restoreProjects: (id) => ipcRenderer.invoke('storage:restore', id),
   sendAIPrompt: (projectId, prompt, expectedOutputId, expectedRunId) =>
     ipcRenderer.invoke('ai:submit', projectId, prompt, expectedOutputId, expectedRunId),
+  sendRequirementsPrompt: (projectId, action, input, expectedOutputId, expectedRunId) =>
+    ipcRenderer.invoke(
+      'ai:requirements',
+      projectId,
+      action,
+      input,
+      expectedOutputId,
+      expectedRunId,
+    ),
   readAISession: (projectId, after, outputId) =>
     ipcRenderer.invoke('ai:read', projectId, after, outputId),
   resizeAISession: (projectId: string, cols: number, rows: number) =>

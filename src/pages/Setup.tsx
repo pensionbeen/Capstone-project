@@ -276,15 +276,21 @@ export function ConnectionPage({
         </details>
       </div>
       <Notice>
-        아래 요구분석은 예시 흐름이에요. 실제 Codex 대화와 별도로 진행하며, 파일 접근 차단은 아직
-        적용되지 않아요.
+        {actualProject
+          ? '요구분석은 Codex와 실제 대화로 진행해요. 아래 버튼은 입력 화면을 열며, 목표를 보낼 때 AI를 호출해요.'
+          : '아래 요구분석은 예시 흐름이에요. 입력한 내용은 AI에 전송하지 않아요.'}{' '}
+        파일 접근 차단은 아직 적용되지 않아요.
       </Notice>
       <div className="step-footer">
         <Button variant="ghost" onClick={onBack}>
           이전 단계
         </Button>
-        <Button onClick={onNext} icon="arrow" disabled={providers.length === 0}>
-          예시로 요구분석 시작
+        <Button
+          onClick={onNext}
+          icon="arrow"
+          disabled={providers.length === 0 || (actualProject && !providers.includes('Codex'))}
+        >
+          {actualProject ? 'AI로 요구분석 시작' : '예시로 요구분석 시작'}
         </Button>
       </div>
     </section>
@@ -458,6 +464,7 @@ export function AnalysisPage({
 }
 
 export function ConfirmPage({
+  manual,
   features,
   busy,
   onEdit,
@@ -466,6 +473,7 @@ export function ConfirmPage({
   onNext,
   onBack,
 }: {
+  manual: boolean;
   features: Feature[];
   busy: boolean;
   onEdit: (feature: Feature) => void;
@@ -479,8 +487,12 @@ export function ConfirmPage({
     <section className="setup-page confirm-page">
       <PageHeading
         eyebrow="04 / DEFINE"
-        title="만들 기능을 함께 정리했어요"
-        description="예시 초안을 살펴보고, 첫 버전에 필요한 기능과 완료 조건을 직접 다듬어 주세요."
+        title={manual ? '만들 기능을 직접 정리해요' : '만들 기능을 함께 정리했어요'}
+        description={
+          manual
+            ? '대화에서 정한 내용을 바탕으로 기능과 완료 조건을 직접 추가해 주세요. AI 대화는 이 목록에 자동 적용되지 않아요.'
+            : '예시 초안을 살펴보고, 첫 버전에 필요한 기능과 완료 조건을 직접 다듬어 주세요.'
+        }
       />
       <div className="list-intro">
         <span>

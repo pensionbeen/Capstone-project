@@ -81,6 +81,10 @@ async function session() {
       message: aiSession.state.message,
       cleaned: aiSession.state.cleanupConfirmed,
       diagnostic: aiSession.diagnostic,
+      purpose: aiSession.state.purpose,
+      goal: aiSession.state.requirementsGoal,
+      conversation: aiSession.conversation,
+      outputId: aiSession.output.id,
       output: aiSession.output.chunks.map((chunk: { data: string }) => chunk.data).join(''),
     };
   }, managerUrl);
@@ -100,7 +104,7 @@ test('AI 화면의 한글 입력·출력·중단·왕복과 종료 정리', asyn
   await mkdir(resolve('.runtime', 'screens'), { recursive: true });
   await page.screenshot({ path: resolve('.runtime', 'screens', '10-ai-conversation.png') });
   await page.getByRole('button', { name: '닫기', exact: true }).click();
-  await page.getByRole('button', { name: '예시로 요구분석 시작' }).click();
+  await page.getByRole('button', { name: 'AI로 요구분석 시작' }).click();
   await page.getByRole('button', { name: 'AI 대화', exact: true }).click();
   await expect.poll(async () => page.locator('.xterm-rows').innerText()).toContain('FIXTURE_REPLY');
   await page.getByRole('button', { name: '연결 준비 확인', exact: true }).click();
@@ -115,6 +119,166 @@ test('AI 화면의 한글 입력·출력·중단·왕복과 종료 정리', asyn
   await page.getByRole('button', { name: '실행 중단', exact: true }).click();
   await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('interrupted');
   expect((await session()).cleaned).toBe(true);
+});
+
+async function openRequirements() {
+  await page.getByRole('button', { name: 'AI로 요구분석 시작', exact: true }).click();
+  await page.getByRole('button', { name: '연결 준비 확인', exact: true }).click();
+  await expect(page.getByRole('button', { name: '연결 준비 다시 확인' })).toBeEnabled();
+}
+
+test('요구분석: 목표·답변·정정과 화면 복귀, 일반 대화 분리', async () => {
+  test.setTimeout(120000);
+  await fixture();
+  await openRequirements();
+  const goal = page.getByRole('textbox', { name: '만들고 싶은 서비스' });
+  const answer = page.getByRole('textbox', { name: '질문에 대한 답변·정정 내용' });
+  await goal.fill('학교 생활을 돕는 앱');
+  await page.getByRole('button', { name: '목표 보내고 질문받기' }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('exited');
+  const initial = await session();
+  expect(initial.purpose).toBe('requirements');
+  expect(initial.output).toContain('학교 생활을 돕는 앱');
+  await expect(page.getByRole('button', { name: '답변·정정 보내기' })).toBeDisabled();
+  await answer.fill('학생만 쓰고 일정 알림부터 만들어요.');
+  await page.getByRole('button', { name: '답변·정정 보내기' }).click();
+  await expect.poll(async () => (await session()).state).toBe('running');
+  await page.getByRole('button', { name: '이전 단계', exact: true }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('exited');
+  await openRequirements();
+  await expect(answer).toHaveValue('');
+  await expect(goal).toHaveValue('학교 생활을 돕는 앱');
+  await goal.fill('학생의 과제 마감 알림 앱');
+  await page.getByRole('button', { name: '목표 수정 보내기' }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('exited');
+  const revised = await session();
+  expect(revised.conversation).toBe(initial.conversation);
+  expect(revised.outputId).toBe(initial.outputId);
+  expect(revised.goal).toBe('학생의 과제 마감 알림 앱');
+  expect(revised.output).toContain('RESUMED');
+  await page.getByRole('button', { name: 'AI 대화', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('textbox', { name: 'Codex에게 보낼 메시지' })).toBeDisabled();
+  await expect(dialog.getByText('요구분석 대화가 열려 있어요.', { exact: false })).toBeVisible();
+  await dialog.getByRole('button', { name: '닫기', exact: true }).click();
+  await page.getByRole('button', { name: '기능 직접 정리하기' }).click();
+  await expect(page.getByRole('heading', { name: '만들 기능을 직접 정리해요' })).toBeVisible();
+  const plan = await page.evaluate(async () => {
+    const catalog = await window.desktop?.listProjects();
+    return catalog?.activeProjectId
+      ? window.desktop?.loadFeaturePlan(catalog.activeProjectId)
+      : null;
+  });
+  expect(plan?.ok && plan.plan.features).toEqual([]);
+});
+
+test('요구분석: 로그인 실패·사용 한도·취소는 입력을 보존하고 자동 재전송하지 않는다', async () => {
+  test.setTimeout(120000);
+  await fixture();
+  await app.evaluate(async (_electron, url) => {
+    const require = process.getBuiltinModule('module').createRequire(url);
+    const { aiSession } = require(url.replace('file:///', ''));
+    aiSession.availabilityStatus = async () => ({
+      status: 'login-required',
+      message: '합성: Codex 로그인이 필요해요.',
+    });
+  }, managerUrl);
+  await openRequirements();
+  const goal = page.getByRole('textbox', { name: '만들고 싶은 서비스' });
+  const answer = page.getByRole('textbox', { name: '질문에 대한 답변·정정 내용' });
+  await goal.fill('어떤 앱을 만들지 정하고 싶어요');
+  await expect(page.getByRole('button', { name: '목표 보내고 질문받기' })).toBeDisabled();
+  await expect(page.getByText('합성: Codex 로그인이 필요해요.')).toBeVisible();
+  expect((await session()).state).toBe('idle');
+  await fixture();
+  await page.getByRole('button', { name: '연결 준비 다시 확인' }).click();
+  await page.getByRole('button', { name: '목표 보내고 질문받기' }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('exited');
+  await answer.fill('RATE_LIMIT 답변 보존');
+  await page.getByRole('button', { name: '답변·정정 보내기' }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('error');
+  await expect(answer).toHaveValue('RATE_LIMIT 답변 보존');
+  expect((await session()).output).toContain('사용 한도에 도달했어요');
+  expect((await session()).cleaned).toBe(true);
+  await answer.fill('WAIT 취소할 답변');
+  await page.getByRole('button', { name: '답변·정정 보내기' }).click();
+  await expect.poll(async () => (await session()).state).toBe('running');
+  await page.getByRole('button', { name: '실행 중단', exact: true }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('interrupted');
+  await expect(answer).toHaveValue('WAIT 취소할 답변');
+  expect((await session()).cleaned).toBe(true);
+  await answer.fill('고친 답변');
+  await page.getByRole('button', { name: '답변·정정 보내기' }).click();
+  await expect.poll(async () => (await session()).state).toBe('running');
+  await answer.fill('전송 대기 중 새로 쓴 답변');
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('exited');
+  await expect(answer).toHaveValue('전송 대기 중 새로 쓴 답변');
+  await expect(page.getByText(/남은.*사용량·비용은 이 앱에서 확인하지 못해요/)).toBeVisible();
+});
+
+test('요구분석: 목표 수정의 실행 준비 실패 후에는 목표 재전송을 먼저 요구한다', async () => {
+  test.setTimeout(90000);
+  await fixture();
+  await openRequirements();
+  const goal = page.getByRole('textbox', { name: '만들고 싶은 서비스' });
+  const answer = page.getByRole('textbox', { name: '질문에 대한 답변·정정 내용' });
+  await goal.fill('기존 목표');
+  await page.getByRole('button', { name: '목표 보내고 질문받기' }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('exited');
+  await app.evaluate(async (_electron, url) => {
+    const require = process.getBuiltinModule('module').createRequire(url);
+    const { aiSession } = require(url.replace('file:///', ''));
+    const prepare = aiSession.dependencies.prepare;
+    aiSession.dependencies.prepare = async () => {
+      aiSession.dependencies.prepare = prepare;
+      throw new Error('LOGIN_NOT_READY');
+    };
+  }, managerUrl);
+  await goal.fill('새로운 목표');
+  await page.getByRole('button', { name: '목표 수정 보내기' }).click();
+  await expect.poll(async () => (await session()).state).toBe('error');
+  await answer.fill('변경한 목표의 답변');
+  await expect(
+    page.getByText('목표 요청이 끝나지 않았어요. 목표를 다시 보내 질문을 받은 뒤 답변해 주세요.'),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: '답변·정정 보내기' })).toBeDisabled();
+  const rejected = await page.evaluate(async () => {
+    const bridge = window.desktop;
+    const catalog = await bridge?.listProjects();
+    if (!bridge || !catalog?.activeProjectId) throw new Error('project missing');
+    const id = catalog.activeProjectId;
+    const state = await bridge.readAISession(id, 0, null);
+    if ('connectionError' in state) throw new Error('connection missing');
+    return bridge.sendRequirementsPrompt(
+      id,
+      'answer',
+      '직접 요청도 거부',
+      state.outputId,
+      state.id,
+    );
+  });
+  expect(rejected.ok).toBe(false);
+  await page.getByRole('button', { name: '목표 수정 보내기' }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('exited');
+  await expect(answer).toHaveValue('변경한 목표의 답변');
+  await expect(page.getByRole('button', { name: '답변·정정 보내기' })).toBeEnabled();
+  await mkdir(resolve('.runtime', 'screens'), { recursive: true });
+  await page.screenshot({
+    path: resolve('.runtime', 'screens', '19-t009-requirements.png'),
+    fullPage: true,
+  });
+  await app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    window.setMinimumSize(500, 600);
+    window.setSize(560, 840);
+  });
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+    .toBe(true);
+  await page.screenshot({
+    path: resolve('.runtime', 'screens', '20-t009-requirements-narrow.png'),
+    fullPage: true,
+  });
 });
 
 test('AI IPC는 임의 프로젝트·인자·iframe을 거부한다', async () => {

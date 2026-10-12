@@ -4,6 +4,11 @@ import { basename, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type AIReply, type AISnapshot, activeAIStates, emptyAISnapshot } from '../../shared/ai.js';
 import type { LocalProject } from '../../shared/local-api.js';
+import {
+  type RequirementsAction,
+  requirementsPrompt,
+  validRequirementsInput,
+} from '../../shared/requirements.js';
 import { inspectDirectory } from '../policy.js';
 import { codexArguments, inspectCodex, installedCodex } from './codex.js';
 import { OutputBuffer, promptIsValid, rejected, sizeIsValid, UUID } from './contracts.js';
@@ -142,6 +147,45 @@ export class SessionManager {
     };
   }
   submit(projectId: string, prompt: string): AIReply {
+    if (this.projectId === projectId && this.state.purpose === 'requirements')
+      return rejected('요구분석 화면에서 답변을 보내거나 새 일반 대화를 시작해 주세요.');
+    return this.startTurn(projectId, prompt, 'chat', null, false);
+  }
+  requirements(projectId: string, action: RequirementsAction, input: string): AIReply {
+    if (!validRequirementsInput(action, input))
+      return rejected('목표는 1~2,000자, 답변·정정은 1~6,000자로 입력해 주세요.');
+    if (action === 'answer' && !this.state.requirementsGoalConfirmed)
+      return rejected(
+        '목표 요청이 끝나지 않았어요. 목표를 다시 보내 질문을 받은 뒤 답변해 주세요.',
+      );
+    if (
+      action !== 'start' &&
+      (this.projectId !== projectId ||
+        this.state.purpose !== 'requirements' ||
+        !this.state.requirementsGoal ||
+        !this.conversation)
+    )
+      return rejected('이어서 보낼 요구분석 대화가 없어요. 목표를 다시 보내 시작해 주세요.');
+    const reply = this.startTurn(
+      projectId,
+      requirementsPrompt(action, input),
+      'requirements',
+      action === 'answer' ? this.state.requirementsGoal : input,
+      action === 'start',
+      action === 'answer' && this.state.requirementsGoalConfirmed,
+    );
+    return reply.ok
+      ? { ...reply, runId: this.state.id ?? undefined, outputId: this.output.id }
+      : reply;
+  }
+  private startTurn(
+    projectId: string,
+    prompt: string,
+    purpose: AISnapshot['purpose'],
+    requirementsGoal: string | null,
+    fresh: boolean,
+    requirementsGoalConfirmed = false,
+  ): AIReply {
     const cwd = this.projects.get(projectId);
     if (!cwd) return rejected('앱에서 실제 프로젝트 폴더를 선택해 주세요.');
     if (!promptIsValid(prompt)) return rejected('메시지를 1~8,000자로 입력해 주세요.');
@@ -151,7 +195,7 @@ export class SessionManager {
       return rejected(
         '이전 실행의 정리가 확인되지 않아 새 실행을 막았어요. 앱을 닫기 전에 실행 상태를 확인해 주세요.',
       );
-    if (this.projectId !== projectId) {
+    if (fresh || this.projectId !== projectId) {
       this.output = new OutputBuffer();
       this.conversation = undefined;
     }
@@ -159,13 +203,16 @@ export class SessionManager {
     this.stopRequested = false;
     this.state = {
       ...emptyAISnapshot,
+      purpose,
+      requirementsGoal,
+      requirementsGoalConfirmed,
       id: randomUUID(),
       state: 'starting',
       message: 'Codex 실행을 준비하고 있어요.',
       cleanupConfirmed: false,
     };
     this.lifetime = this.run(cwd, prompt);
-    return { ok: true };
+    return { ok: true, runId: this.state.id ?? undefined, outputId: this.output.id };
   }
   stop(projectId: string): AIReply {
     if (projectId !== this.projectId || !this.busy)
@@ -416,6 +463,8 @@ export class SessionManager {
         this.state.message = '로컬 실행을 중단하고 정리했어요. 대화를 이어서 보낼 수 있어요.';
       } else {
         this.state.state = result?.code === 0 ? 'exited' : 'error';
+        if (result?.code === 0 && this.state.purpose === 'requirements')
+          this.state.requirementsGoalConfirmed = true;
         this.state.message =
           result?.code === 0
             ? '실행이 끝났어요. 결과를 확인하고 다음 메시지를 보내세요.'

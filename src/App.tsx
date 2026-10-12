@@ -6,6 +6,7 @@ import {
   type ProjectFeaturePlan,
   validateFeaturePlan,
 } from '../shared/feature-plan';
+import type { RequirementsDraft } from '../shared/requirements';
 import type { ProjectCatalog } from '../shared/storage';
 import { canRecordVerification, nextVerificationTime } from '../shared/verification';
 import { FeatureEditor, VerificationEditor, WorkDetails } from './components/FeatureDialogs';
@@ -51,6 +52,9 @@ const navigation: { id: View; label: string; icon: IconName }[] = [
 const AIConsole = lazy(() =>
   import('./components/AIConsole').then((module) => ({ default: module.AIConsole })),
 );
+const RequirementsPage = lazy(() =>
+  import('./pages/Requirements').then((module) => ({ default: module.RequirementsPage })),
+);
 const emptyAnalysis: AnalysisDraft = {
   goal: '',
   started: false,
@@ -74,6 +78,7 @@ export default function App() {
   const [providers, setProviders] = useState<Provider[]>(['Codex']);
   const [protection, setProtection] = useState(initialProtection);
   const [analysis, setAnalysis] = useState(emptyAnalysis);
+  const [requirements, setRequirements] = useState<RequirementsDraft>({ goal: '', answer: '' });
   const [featurePlan, setFeaturePlan] = useState<ProjectFeaturePlan>(emptyFeaturePlan());
   const features = featurePlan.features;
   const records = featurePlan.verifications;
@@ -232,6 +237,7 @@ export default function App() {
     setProject(value);
     setPendingProject(null);
     setAnalysis(emptyAnalysis);
+    setRequirements({ goal: '', answer: '' });
     setFeaturePlan(plan);
     setEditing(null);
     setOpenedFeature(null);
@@ -295,7 +301,8 @@ export default function App() {
   function chooseProject(value: Project) {
     if (planSaveLock.current) return;
     if (project?.path === value.path && project.sample === value.sample) return;
-    if (project && (analysis.goal || features.length)) setPendingProject(value);
+    if (project && (analysis.goal || requirements.goal || requirements.answer || features.length))
+      setPendingProject(value);
     else applyProject(value);
   }
   async function persistPlan(candidate: ProjectFeaturePlan) {
@@ -664,7 +671,20 @@ export default function App() {
                 />
               </>
             )}
-            {!inWorkspace && step === 2 && (
+            {!inWorkspace && step === 2 && project?.desktopId && (
+              <Suspense fallback={<p>요구분석 화면을 준비하고 있어요.</p>}>
+                <RequirementsPage
+                  project={project}
+                  draft={requirements}
+                  onChange={setRequirements}
+                  enabled={providers.includes('Codex')}
+                  busy={aiBusy || planSaving}
+                  onBack={() => setStep(1)}
+                  onManual={() => setStep(3)}
+                />
+              </Suspense>
+            )}
+            {!inWorkspace && step === 2 && !project?.desktopId && (
               <AnalysisPage
                 value={analysis}
                 onChange={setAnalysis}
@@ -677,6 +697,7 @@ export default function App() {
             )}
             {!inWorkspace && step === 3 && (
               <ConfirmPage
+                manual={Boolean(project?.desktopId)}
                 features={features.filter((item) => item.kind === 'leaf')}
                 busy={planSaving}
                 onEdit={openEditor}
