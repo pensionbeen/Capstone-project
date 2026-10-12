@@ -228,7 +228,7 @@ test('요구분석: 목표·답변·정정과 화면 복귀, 일반 대화 분�
   await page.getByRole('button', { name: 'AI 대화', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('textbox', { name: 'Codex에게 보낼 메시지' })).toBeDisabled();
-  await expect(dialog.getByText('요구분석 대화가 열려 있어요.', { exact: false })).toBeVisible();
+  await expect(dialog.getByText('다른 목적의 대화가 열려 있어요.', { exact: false })).toBeVisible();
   await dialog.getByRole('button', { name: '닫기', exact: true }).click();
   await page.getByRole('button', { name: '기능 직접 정리하기' }).click();
   await expect(page.getByRole('heading', { name: '만들 기능을 직접 정리해요' })).toBeVisible();
