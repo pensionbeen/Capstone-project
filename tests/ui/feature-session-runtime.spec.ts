@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 import { _electron, type ElectronApplication, expect, type Page, test } from '@playwright/test';
 import type { AISnapshot } from '../../shared/ai';
 import type { ProjectFeaturePlan } from '../../shared/feature-plan';
@@ -200,15 +201,80 @@ test('기능 조건·버전·경로가 실제 실행에 연결되고 답변·화
 test('실제 Codex: 기능의 읽기 전용 분석과 같은 대화 답변', async () => {
   test.skip(process.env.ORBIT_LIVE_AI !== '1', 'ORBIT_LIVE_AI=1에서만 실제 서비스 호출');
   test.setTimeout(180000);
+  const evidenceDirectory = resolve(
+    '.runtime',
+    'feature-session-live',
+    `${Date.now()}-${randomUUID()}`,
+  );
+  await mkdir(evidenceDirectory, { recursive: true });
+  const terminal = page.getByRole('region', { name: '기능 대화 AI 출력' });
+  async function recordTurn(turn: 'first' | 'answer', observed: AISnapshot, afterSequence = 0) {
+    const raw = await page.evaluate(
+      ({ id, outputId }) => window.desktop?.readAISession(id, 0, outputId),
+      { id: projectId, outputId: observed.outputId },
+    );
+    if (!raw || 'connectionError' in raw)
+      throw new Error('실제 기능 대화의 출력 증거를 조회하지 못했어요.');
+    expect(raw.id).toBe(observed.id);
+    expect(raw.outputId).toBe(observed.outputId);
+    const rawOutput = raw.chunks.map((chunk) => chunk.data).join('');
+    const turnOutput = raw.chunks
+      .filter((chunk) => chunk.sequence >= afterSequence)
+      .map((chunk) => chunk.data)
+      .join('');
+    await writeFile(
+      resolve(evidenceDirectory, `${turn}.json`),
+      JSON.stringify(
+        {
+          source: 'actual-codex-feature-dialogue',
+          turn,
+          observedAt: new Date().toISOString(),
+          projectId,
+          runId: raw.id,
+          outputId: raw.outputId,
+          state: raw.state,
+          featureContext: raw.featureContext,
+          exitCode: raw.exitCode,
+          cleanupConfirmed: raw.cleanupConfirmed,
+          conversationReady: raw.conversationReady,
+          firstSequence: raw.firstSequence,
+          nextSequence: raw.nextSequence,
+          truncated: raw.truncated,
+          message: raw.message,
+          rawOutput,
+          outputText: stripVTControlCharacters(rawOutput),
+          turnOutputText: stripVTControlCharacters(turnOutput),
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    await terminal.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: resolve(evidenceDirectory, `${turn}.png`) });
+    await test
+      .info()
+      .attach(`${turn}-response`, {
+        path: resolve(evidenceDirectory, `${turn}.json`),
+        contentType: 'application/json',
+      });
+    return raw.nextSequence;
+  }
   await open('학생 알림 분석');
   await expect(page.getByRole('button', { name: '이 기능으로 대화 시작' })).toBeEnabled();
   await page.getByRole('button', { name: '이 기능으로 대화 시작' }).click();
-  await expect.poll(async () => (await status()).state, { timeout: 90000 }).toBe('exited');
+  await expect
+    .poll(async () => ['exited', 'error', 'interrupted'].includes((await status()).state), {
+      timeout: 90000,
+    })
+    .toBe(true);
   const first = await status();
+  const firstNextSequence = await recordTurn('first', first);
+  expect(first.state).toBe('exited');
   expect(first.exitCode).toBe(0);
   expect(first.cleanupConfirmed).toBe(true);
   expect(first.featureContext?.featureId).toBe(savedPlan.features[0]?.id);
-  const terminal = page.getByRole('region', { name: '기능 대화 AI 출력' });
+  // A nonempty terminal is only a rendering check; the saved text is inspected separately.
   await expect(terminal.locator('.xterm-rows')).not.toHaveText('');
   await page
     .getByRole('textbox', { name: '기능 대화에 보낼 답변' })
@@ -217,8 +283,14 @@ test('실제 Codex: 기능의 읽기 전용 분석과 같은 대화 답변', asy
     );
   await page.getByRole('button', { name: '기능 답변 보내기' }).click();
   await expect.poll(async () => (await status()).id).not.toBe(first.id);
-  await expect.poll(async () => (await status()).state, { timeout: 90000 }).toBe('exited');
+  await expect
+    .poll(async () => ['exited', 'error', 'interrupted'].includes((await status()).state), {
+      timeout: 90000,
+    })
+    .toBe(true);
   const answer = await status();
+  await recordTurn('answer', answer, firstNextSequence);
+  expect(answer.state).toBe('exited');
   expect(answer.exitCode).toBe(0);
   expect(answer.cleanupConfirmed).toBe(true);
   expect(answer.outputId).toBe(first.outputId);
