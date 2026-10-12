@@ -1,5 +1,7 @@
 # T-004 로컬 연결·인증
 
+**T-011 추가:** `POST /v1/projects/:id/session/feature`는 `action`, `featureId`, `expectedRevision`, `input`, `expectedOutputId`, `expectedRunId`를 받는다. 실제 문맥은 DB에서 읽고 준비 예약·경로/버전/원문 재검사와 기존 인증·중복 요청 계약을 적용한다. 이전 실행 중단은 새 준비를 취소하지 않는다. `purpose: 'feature'`와 `featureContext`는 실제 실행 문맥이다. [공통 계약](FEATURE_SESSIONS.md).
+
 **T-009/T-010 추가:** 기존 인증·프로젝트·요청 ID·출력/실행 ID 규칙을 그대로 적용하는 `POST /v1/projects/:id/session/requirements`와 `/session/generate`를 연결했다. 전자는 목표 시작·답변·목표 수정만 받고 후자는 renderer 입력 프롬프트나 파일 경로 없이 앱의 고정 생성 요청을 사용한다. 같은 요청은 중복 실행하지 않으며 오래된 실행 ID는 거부한다. 생성 상태·초안·실패 안내는 공통 AISnapshot으로 전달하고 실제 저장은 기존 기능 저장 API를 사용한다. [요구분석 안내](REQUIREMENTS.md).
 
 **T-007 후속 (WL-20261011-01):** SQLite v3 기능/경로는 main의 `features:load/save`, `files:list/open` 고정 IPC를 사용한다. 정확한 앱 창·최상위 프레임과 인자를 검사하며 등록된 프로젝트 ID와 상대 경로만 받는다. 실제 root는 DB에서 읽는다. 계획 변경은 실행·정리 미확인·대기 중인 AI 요청·다른 저장 중 차단한다. `project:activate/save-name`은 저장된 실제 프로젝트 ID와 plan을 함께 반환한다. REST/WS에 임의 SQL·외부 명령 접점을 추가하지 않았다. [저장 계약](PROJECT_STORAGE.md)·[검토표](reviews/2026-10-11-gemini.md).
