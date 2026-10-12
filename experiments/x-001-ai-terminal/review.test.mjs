@@ -8,7 +8,7 @@ import { checkUserSettings, checkGeminiEnv } from './gemini-guard.mjs';
 import { snapshot } from './snapshot.mjs';
 import { parseAgyHelp } from './agy-help.mjs';
 
-// Sanitized option/command rows observed in agy 1.2.16, not a service response.
+// Sanitized option/command rows observed through agy 1.3.3, not a service response.
 const agyHelp = `Usage of agy.exe:
   --add-dir                       Add a directory to the workspace (repeatable) (default [])
   --disable-slash-commands        Disable slash command and skill expansion in print mode
@@ -19,6 +19,7 @@ const agyHelp = `Usage of agy.exe:
   --output-format                 Output format for print mode (text, json, stream-json) (default text)
   --print                         Run a single prompt non-interactively and print the response
   --print-timeout                 Optional time limit for print mode (default 0s)
+  --project                       Project identifier for the current CLI session
   --sandbox                       Run in a sandbox with terminal restrictions enabled
 
 Available subcommands:
@@ -29,13 +30,13 @@ Available subcommands:
   models          List available models
 `;
 
-test('Agy 1.2.16 help is recognized without a --help option, with LF or CRLF', () => {
+test('Observed Agy help is recognized without a --help option, with LF or CRLF', () => {
   for (const text of [agyHelp, agyHelp.replaceAll('\n', '\r\n')]) {
     const result = parseAgyHelp(text);
     assert.equal(result.formatConfirmed, true);
     assert.equal(result.flags.includes('--help'), false);
     assert.deepEqual(result.commands, ['models', 'agents']);
-    assert.equal(result.flags.length, 10);
+    assert.equal(result.flags.length, 11);
   }
 });
 
@@ -51,7 +52,7 @@ test('Agy help rejects unrelated usage, missing headers, and option mentions in 
 
 test('Agy help requires every observed essential option declaration', () => {
   for (const flag of ['--print', '--model', '--effort', '--mode', '--sandbox',
-    '--output-format', '--print-timeout', '--disable-slash-commands']) {
+    '--output-format', '--input-format', '--project', '--print-timeout', '--disable-slash-commands']) {
     const incomplete = agyHelp.split('\n').filter((line) => !line.startsWith('  ' + flag + ' ')).join('\n');
     assert.equal(parseAgyHelp(incomplete).formatConfirmed, false, flag);
   }

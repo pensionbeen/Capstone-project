@@ -2,6 +2,8 @@ import type { DesktopBridge } from '../shared/desktop.js';
 
 const { contextBridge, ipcRenderer } = require('electron') as typeof import('electron');
 const desktop: DesktopBridge = {
+  generateFeatureDraft: (projectId, expectedOutputId, expectedRunId) =>
+    ipcRenderer.invoke('ai:generate', projectId, expectedOutputId, expectedRunId),
   selectProjectFolder: () => ipcRenderer.invoke('project:select-folder'),
   inspectAI: () => ipcRenderer.invoke('ai:inspect'),
   readAIStatus: (projectId) => ipcRenderer.invoke('ai:status', projectId),

@@ -129,7 +129,12 @@ export async function inspectCodex(signal?: AbortSignal): Promise<AIAvailability
   }
 }
 
-export function codexArguments(cwd: string, input: string, conversation?: string): string[] {
+export function codexArguments(
+  cwd: string,
+  input: string,
+  conversation?: string,
+  resultFile?: string,
+): string[] {
   if (conversation && !UUID.test(conversation)) throw new Error('INVALID_CONVERSATION');
   const args = [
     '--ask-for-approval',
@@ -157,6 +162,7 @@ export function codexArguments(cwd: string, input: string, conversation?: string
     '--cd',
     cwd,
   ];
+  if (resultFile) args.push('--output-last-message', resultFile);
   if (conversation) args.push('resume', conversation);
   // A fixed prefix also keeps the special lone '-' prompt from selecting stdin.
   args.push('--', `ORBIT 사용자의 요청입니다.\n\n${input}`);

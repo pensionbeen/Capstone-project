@@ -13,6 +13,7 @@ export function RequirementsPage({
   onBack,
   onManual,
   children,
+  onBusyChange,
 }: {
   project: Project;
   draft: RequirementsDraft;
@@ -22,6 +23,7 @@ export function RequirementsPage({
   onBack: () => void;
   onManual: () => void;
   children?: ReactNode;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   return (
     <section className="setup-page analysis-page">
@@ -38,7 +40,11 @@ export function RequirementsPage({
       {!enabled && (
         <Notice>현재 요구분석은 Codex로 연결돼요. 이전 단계에서 Codex를 선택해 주세요.</Notice>
       )}
-      <AIConversation project={project} requirements={{ draft, onChange, enabled }} />
+      <AIConversation
+        project={project}
+        requirements={{ draft, onChange, enabled }}
+        onBusyChange={onBusyChange}
+      />
       {children}
       <p className="analysis-disclaimer">
         대화 결과는 기능 목록에 자동 적용되지 않아요. 정리한 내용을 보고 기능과 완료 조건을 직접

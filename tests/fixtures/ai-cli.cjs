@@ -21,7 +21,7 @@ if (data.prompt.includes('RATE_LIMIT')) {
     process.stdout.write('\r\nERROR: usage limit reached. 사용 한도에 도달했어요.\r\n');
     setTimeout(() => process.exit(1), 400);
   }, 2200);
-} else if (data.prompt.includes('WAIT')) {
+} else if (data.prompt.includes('WAIT') || (data.resultFile && data.generationMode === 'wait')) {
   setInterval(() => {}, 1000);
 } else if (data.prompt.includes('BURST')) {
   let count = 0;
@@ -35,6 +35,26 @@ if (data.prompt.includes('RATE_LIMIT')) {
   }, 30);
 } else {
   setTimeout(() => {
+    if (data.resultFile)
+      require('node:fs').writeFileSync(
+        data.resultFile,
+        data.generationMode === 'invalid'
+          ? '{"features":[]}'
+          : JSON.stringify({
+              features: [
+                {
+                  key: 'task',
+                  parentKey: null,
+                  kind: 'leaf',
+                  title: '과제 등록',
+                  description: '과제 이름과 마감일을 등록해요.',
+                  criteria: ['과제 이름과 마감일을 입력하여 저장할 수 있다.'],
+                  relatedPaths: [],
+                },
+              ],
+              dependencies: [],
+            }),
+      );
     process.stdout.write(
       `\r\nFIXTURE_REPLY:한글 응답 ${data.conversation ? 'RESUMED' : 'FIRST'}\r\n`,
     );

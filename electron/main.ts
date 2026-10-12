@@ -420,6 +420,21 @@ void app.whenReady().then(async () => {
       apiClient?.command(id, 'submit', { prompt, expectedOutputId, expectedRunId }),
     );
   });
+  ipcMain.handle('ai:generate', (event, ...args: unknown[]) => {
+    const [id, expectedOutputId, expectedRunId] = args;
+    if (
+      !trusted(event) ||
+      selecting ||
+      args.length !== 3 ||
+      !projectArgument(id) ||
+      !(expectedOutputId === null || projectArgument(expectedOutputId)) ||
+      !(expectedRunId === null || projectArgument(expectedRunId))
+    )
+      return rejected('프로젝트와 대화 상태를 확인해 주세요.');
+    return changingAI(() =>
+      apiClient?.command(id, 'generate', { expectedOutputId, expectedRunId }),
+    );
+  });
   ipcMain.handle('ai:requirements', (event, ...args: unknown[]) => {
     const [id, action, input, expectedOutputId, expectedRunId] = args;
     if (

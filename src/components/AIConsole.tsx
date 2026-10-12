@@ -36,8 +36,10 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
 export function AIConversation({
   project,
   requirements,
+  onBusyChange,
 }: {
   project: Project;
+  onBusyChange?: (busy: boolean) => void;
   requirements?: {
     draft: RequirementsDraft;
     onChange: Dispatch<SetStateAction<RequirementsDraft>>;
@@ -68,6 +70,10 @@ export function AIConversation({
   const [connectionMessage, setConnectionMessage] = useState('앱 내부 연결을 확인하고 있어요.');
   const [retryRequired, setRetryRequired] = useState(false);
   const busy = activeAIStates.includes(snapshot.state) || sending;
+  useEffect(() => {
+    onBusyChange?.(busy);
+    return () => onBusyChange?.(false);
+  }, [busy, onBusyChange]);
   const projectId = project.desktopId;
   const purpose = requirements ? 'requirements' : 'chat';
   const onRequirementsChange = requirements?.onChange;

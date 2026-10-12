@@ -247,7 +247,7 @@ test('복원 뒤 목록 조회가 실패해도 확정된 선택을 즉시 화면
 test('프로젝트 변경 확정 응답 대기 동안 취소와 Escape를 막는다', async () => {
   await select();
   await page.getByRole('button', { name: '이 프로젝트로 시작' }).click();
-  await page.getByRole('button', { name: '예시로 요구분석 시작' }).click();
+  await page.getByRole('button', { name: 'AI로 요구분석 시작' }).click();
   await page.getByRole('textbox', { name: '만들고 싶은 서비스' }).fill('유지해야 하는 요구');
   await page.getByRole('button', { name: '프로젝트 선택', exact: true }).click();
   const second = join(folder, '변경할 폴더');

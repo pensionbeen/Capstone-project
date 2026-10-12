@@ -46,6 +46,7 @@ export type SessionBackend = Pick<
   | 'availabilityStatus'
   | 'submit'
   | 'requirements'
+  | 'generate'
   | 'stop'
   | 'reset'
   | 'resize'
@@ -257,6 +258,7 @@ export async function startLocalApi(
       expectedOutputId: nullableId,
       expectedRunId: nullableId,
     }),
+    generate: objectSchema({ expectedOutputId: nullableId, expectedRunId: nullableId }),
     requirements: objectSchema({
       action: { type: 'string', enum: ['start', 'answer', 'revise-goal'] },
       input: { type: 'string', minLength: 1, maxLength: 6000 },
@@ -270,7 +272,7 @@ export async function startLocalApi(
       rows: { type: 'integer', minimum: 5, maximum: 120 },
     }),
   };
-  for (const action of ['submit', 'requirements', 'stop', 'reset', 'resize'] as const) {
+  for (const action of ['submit', 'requirements', 'generate', 'stop', 'reset', 'resize'] as const) {
     app.post<{
       Params: { id: string };
       Body: {
@@ -294,7 +296,10 @@ export async function startLocalApi(
           const state = manager.read(id, 0);
           if (
             (action === 'stop' && state.id !== body.expectedRunId) ||
-            ((action === 'reset' || action === 'submit' || action === 'requirements') &&
+            ((action === 'reset' ||
+              action === 'submit' ||
+              action === 'requirements' ||
+              action === 'generate') &&
               (state.outputId !== body.expectedOutputId || state.id !== body.expectedRunId))
           )
             throw new ApiError(
@@ -304,6 +309,7 @@ export async function startLocalApi(
             );
           if (action === 'submit') return manager.submit(id, body.prompt);
           if (action === 'requirements') return manager.requirements(id, body.action, body.input);
+          if (action === 'generate') return manager.generate(id);
           if (action === 'stop') return manager.stop(id);
           if (action === 'reset') return manager.reset(id);
           return manager.resize(id, body.cols, body.rows);

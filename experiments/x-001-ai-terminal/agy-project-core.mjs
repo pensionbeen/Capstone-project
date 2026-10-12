@@ -3,7 +3,7 @@ import path from 'node:path';
 export const agyDenyRules = ['read_file(*)', 'write_file(*)', 'command(*)', 'unsandboxed(*)',
   'read_url(*)', 'execute_url(*)', 'mcp(*)'];
 export const agyModel = 'gemini-3.1-pro-high';
-export const agyReviewedVersion = '1.2.17';
+export const agyReviewedVersion = '1.3.3';
 export const hasAgyAuthOverride = env => Object.keys(env).some(key =>
   /^(AGY|GEMINI|GOOGLE_API|GOOGLE_GENAI|GOOGLE_APPLICATION|ANTIGRAVITY)/iu.test(key));
 export function parseAgyEvent(line) {

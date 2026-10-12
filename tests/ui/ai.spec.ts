@@ -1,13 +1,14 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { promisify } from 'node:util';
+import { promisify, stripVTControlCharacters } from 'node:util';
 import { _electron, type ElectronApplication, expect, type Page, test } from '@playwright/test';
 
 let app: ElectronApplication;
 let page: Page;
+let appClosed = false;
 const errors: string[] = [];
 const folder = resolve('.runtime', 'ui-ai-project');
 const managerUrl = pathToFileURL(resolve('dist/desktop/electron/main.js')).href;
@@ -23,7 +24,34 @@ test.beforeEach(async () => {
     args: ['.', `--user-data-dir=${resolve('.runtime', `ai-ui-${randomUUID()}`)}`],
     env,
   });
+  appClosed = false;
+  app.on('close', () => {
+    appClosed = true;
+  });
   page = await app.firstWindow();
+  await app.evaluate(async (_electron, url) => {
+    const require = process.getBuiltinModule('module').createRequire(url);
+    const { aiSession } = require(url.replace('file:///', ''));
+    const auditPath = process
+      .getBuiltinModule('url')
+      .fileURLToPath(new URL('./ai/process-audit.js', url));
+    const { processSnapshot } = require(auditPath);
+    const metrics = { count: 0, elapsedMs: 0, maxMs: 0 };
+    Reflect.set(globalThis, 'auditMeasurement', metrics);
+    aiSession.dependencies.snapshot = async () => {
+      const start = performance.now();
+      try {
+        const rows = await processSnapshot();
+        Reflect.set(globalThis, 'latestAuditRows', rows);
+        return rows;
+      } finally {
+        const elapsed = performance.now() - start;
+        metrics.count++;
+        metrics.elapsedMs += elapsed;
+        metrics.maxMs = Math.max(metrics.maxMs, elapsed);
+      }
+    };
+  }, managerUrl);
   errors.length = 0;
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('console', (message) => {
@@ -36,11 +64,24 @@ test.beforeEach(async () => {
   await page.getByRole('button', { name: '이 프로젝트로 시작' }).click();
 });
 test.afterEach(async () => {
-  await app?.close();
+  const info = test.info();
+  if (app && !appClosed) {
+    const metrics = await app
+      .evaluate(() => Reflect.get(globalThis, 'auditMeasurement'))
+      .catch(() => null);
+    if (metrics) {
+      await mkdir(resolve('.runtime', 'ai-evidence'), { recursive: true });
+      await writeFile(
+        resolve('.runtime', 'ai-evidence', `audit-${Date.now()}.json`),
+        JSON.stringify({ title: info.title, status: info.status, metrics }, null, 2),
+      );
+    }
+  }
+  if (app && !appClosed) await app.close();
   expect(errors).toEqual([]);
 });
 
-async function fixture() {
+async function fixture(generationMode = 'valid') {
   await app.evaluate(
     async (_electron, config) => {
       const require = process.getBuiltinModule('module').createRequire(config.managerUrl);
@@ -48,11 +89,24 @@ async function fixture() {
       // Trusted test runner injection; no test launch option or renderer backdoor in production.
       Object.assign(aiSession, {
         dependencies: {
-          prepare: async (_cwd: string, prompt: string, conversation?: string) => ({
+          snapshot: aiSession.dependencies.snapshot,
+          prepare: async (
+            _cwd: string,
+            prompt: string,
+            conversation?: string,
+            resultFile?: string,
+          ) => ({
             file: config.node,
             args: [
               config.fixture,
-              Buffer.from(JSON.stringify({ prompt, conversation })).toString('base64'),
+              Buffer.from(
+                JSON.stringify({
+                  prompt,
+                  conversation,
+                  resultFile,
+                  generationMode: config.generationMode,
+                }),
+              ).toString('base64'),
             ],
             inspectHeader: true,
           }),
@@ -64,7 +118,12 @@ async function fixture() {
         message: '합성 CLI 검증: 실제 AI 호출 없음',
       });
     },
-    { managerUrl, node: process.execPath, fixture: resolve('tests/fixtures/ai-cli.cjs') },
+    {
+      managerUrl,
+      node: process.execPath,
+      fixture: resolve('tests/fixtures/ai-cli.cjs'),
+      generationMode,
+    },
   );
 }
 async function openConversation() {
@@ -77,6 +136,7 @@ async function session() {
     const require = process.getBuiltinModule('module').createRequire(url);
     const { aiSession } = require(url.replace('file:///', ''));
     return {
+      runId: aiSession.state.id,
       state: aiSession.state.state,
       message: aiSession.state.message,
       cleaned: aiSession.state.cleanupConfirmed,
@@ -85,6 +145,8 @@ async function session() {
       goal: aiSession.state.requirementsGoal,
       conversation: aiSession.conversation,
       outputId: aiSession.output.id,
+      generationState: aiSession.state.generationState,
+      generatedPlan: aiSession.state.generatedPlan,
       output: aiSession.output.chunks.map((chunk: { data: string }) => chunk.data).join(''),
     };
   }, managerUrl);
@@ -93,30 +155,37 @@ async function session() {
 test('AI 화면의 한글 입력·출력·중단·왕복과 종료 정리', async () => {
   test.setTimeout(90000);
   await fixture();
+  const dialog = page.getByRole('dialog', { name: 'Codex와 대화' });
   await page.getByRole('checkbox', { name: 'Gemini', exact: true }).check();
   await openConversation();
-  await page.getByRole('textbox', { name: 'Codex에게 보낼 메시지' }).fill('--help\n한글 첫 메시지');
-  await page.getByRole('button', { name: '메시지 보내기' }).click();
+  await dialog
+    .getByRole('textbox', { name: 'Codex에게 보낼 메시지' })
+    .fill('--help\n한글 첫 메시지');
+  await dialog.getByRole('button', { name: '메시지 보내기' }).click();
   await expect.poll(async () => (await session()).state).toBe('running');
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1100, 800));
   await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('exited');
-  await expect.poll(async () => page.locator('.xterm-rows').innerText()).toContain('FIXTURE_REPLY');
+  await expect
+    .poll(async () => dialog.locator('.xterm-rows').innerText())
+    .toContain('FIXTURE_REPLY');
   await mkdir(resolve('.runtime', 'screens'), { recursive: true });
   await page.screenshot({ path: resolve('.runtime', 'screens', '10-ai-conversation.png') });
-  await page.getByRole('button', { name: '닫기', exact: true }).click();
+  await dialog.getByRole('button', { name: '닫기', exact: true }).click();
   await page.getByRole('button', { name: 'AI로 요구분석 시작' }).click();
   await page.getByRole('button', { name: 'AI 대화', exact: true }).click();
-  await expect.poll(async () => page.locator('.xterm-rows').innerText()).toContain('FIXTURE_REPLY');
-  await page.getByRole('button', { name: '연결 준비 확인', exact: true }).click();
-  await page.getByRole('textbox', { name: 'Codex에게 보낼 메시지' }).fill('WAIT 화면 이동');
-  await page.getByRole('button', { name: '메시지 보내기' }).click();
+  await expect
+    .poll(async () => dialog.locator('.xterm-rows').innerText())
+    .toContain('FIXTURE_REPLY');
+  await dialog.getByRole('button', { name: '연결 준비 확인', exact: true }).click();
+  await dialog.getByRole('textbox', { name: 'Codex에게 보낼 메시지' }).fill('WAIT 화면 이동');
+  await dialog.getByRole('button', { name: '메시지 보내기' }).click();
   await expect.poll(async () => (await session()).state).toBe('running');
-  await page.getByRole('button', { name: '닫기', exact: true }).click();
+  await dialog.getByRole('button', { name: '닫기', exact: true }).click();
   await page.getByRole('button', { name: '프로젝트 선택', exact: true }).click();
   await page.getByRole('button', { name: '폴더 변경', exact: true }).click();
   await expect(page.getByRole('status')).toContainText('AI 실행을 중단');
   await page.getByRole('button', { name: 'AI 대화', exact: true }).click();
-  await page.getByRole('button', { name: '실행 중단', exact: true }).click();
+  await dialog.getByRole('button', { name: '실행 중단', exact: true }).click();
   await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('interrupted');
   expect((await session()).cleaned).toBe(true);
 });
@@ -281,6 +350,143 @@ test('요구분석: 목표 수정의 실행 준비 실패 후에는 목표 재�
   });
 });
 
+async function savedPlan() {
+  return page.evaluate(async () => {
+    const bridge = window.desktop;
+    const id = (await bridge?.listProjects())?.activeProjectId;
+    if (!bridge || !id) throw new Error('project missing');
+    const result = await bridge.loadFeaturePlan(id);
+    if (!result.ok) throw new Error(result.message);
+    return result.plan;
+  });
+}
+
+test('기능 생성: 잘못된 응답·편집·저장 실패·재시도와 기존 목록 보존', async () => {
+  test.setTimeout(140000);
+  await fixture('invalid');
+  await openRequirements();
+  await page.getByRole('textbox', { name: '만들고 싶은 서비스' }).fill('개인 과제 관리');
+  await page.getByRole('button', { name: '목표 보내고 질문받기' }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('exited');
+  const original = await savedPlan();
+  await page.getByRole('button', { name: '대화로 기능 초안 만들기', exact: true }).click();
+  await expect
+    .poll(async () => (await session()).generationState, { timeout: 25000 })
+    .toBe('error');
+  expect(await savedPlan()).toEqual(original);
+  await expect(page.getByRole('heading', { name: '기능 초안 미리보기' })).toHaveCount(0);
+  await fixture();
+  await page.getByRole('button', { name: '대화로 기능 초안 만들기', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '기능 초안 미리보기' })).toBeVisible({
+    timeout: 25000,
+  });
+  const firstDraft = await session();
+  await page.getByRole('button', { name: '초안 취소', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '기능 초안 미리보기' })).toHaveCount(0);
+  await page.getByRole('button', { name: '대화로 기능 초안 만들기', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '기능 초안 미리보기' })).toBeVisible({
+    timeout: 25000,
+  });
+  const regenerated = await session();
+  expect(regenerated.conversation).toBe(firstDraft.conversation);
+  expect(regenerated.outputId).toBe(firstDraft.outputId);
+  expect(regenerated.runId).not.toBe(firstDraft.runId);
+  expect(await savedPlan()).toEqual(original);
+  await page.getByRole('button', { name: '과제 등록 초안 수정' }).click();
+  await page.getByRole('textbox', { name: '기능 이름', exact: true }).fill('마감일 있는 과제 등록');
+  await page
+    .getByRole('textbox', { name: '완료 조건', exact: true })
+    .fill('이름과 마감일을 저장하고 다시 열어 확인한다.');
+  await page.getByRole('button', { name: '초안에 반영', exact: true }).click();
+  await app.evaluate(({ ipcMain }) => {
+    const handlers = (
+      ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> }
+    )._invokeHandlers;
+    const key = 'features:save';
+    const original = handlers.get(key);
+    if (!original) throw new Error('save handler missing');
+    handlers.set(key, () => {
+      handlers.set(key, original);
+      return { ok: false, message: '합성 저장 실패: 초안 유지' };
+    });
+  });
+  await page.getByRole('button', { name: '초안 적용', exact: true }).click();
+  await expect(
+    page.getByText('초안을 저장하지 못했어요. 기존 기능과 입력은 유지했어요. 다시 시도해 주세요.'),
+  ).toBeVisible();
+  expect(await savedPlan()).toEqual(original);
+  await expect(page.getByRole('heading', { name: '마감일 있는 과제 등록' })).toBeVisible();
+  await mkdir(resolve('.runtime', 'screens'), { recursive: true });
+  await page.screenshot({
+    path: resolve('.runtime', 'screens', '21-t010-draft.png'),
+    fullPage: true,
+  });
+  await page.getByRole('button', { name: '초안 적용', exact: true }).click();
+  await expect.poll(async () => (await savedPlan()).features.length).toBe(1);
+  const saved = await savedPlan();
+  expect(saved.features[0].title).toBe('마감일 있는 과제 등록');
+  expect(saved.verifications).toEqual([]);
+  await page.getByRole('button', { name: '요구분석으로 돌아가기', exact: true }).click();
+  await fixture('invalid');
+  await page.getByRole('button', { name: '대화로 기능 초안 만들기', exact: true }).click();
+  await expect
+    .poll(async () => (await session()).generationState, { timeout: 25000 })
+    .toBe('error');
+  expect(await savedPlan()).toEqual(saved);
+  const userData = await app.evaluate(({ app }) => app.getPath('userData'));
+  await app.close();
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key, value]) => key !== 'ELECTRON_RUN_AS_NODE' && value !== undefined,
+    ),
+  ) as Record<string, string>;
+  app = await _electron.launch({ args: ['.', `--user-data-dir=${userData}`], env });
+  appClosed = false;
+  app.on('close', () => {
+    appClosed = true;
+  });
+  page = await app.firstWindow();
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.waitForFunction(() => Boolean(window.desktop));
+  expect(await savedPlan()).toEqual(saved);
+});
+
+test('기능 생성: 중단·오래된 초안 적용 차단·취소는 저장하지 않는다', async () => {
+  test.setTimeout(120000);
+  await fixture('wait');
+  await openRequirements();
+  await page.getByRole('textbox', { name: '만들고 싶은 서비스' }).fill('과제 관리');
+  await page.getByRole('button', { name: '목표 보내고 질문받기' }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('exited');
+  const original = await savedPlan();
+  await page.getByRole('button', { name: '대화로 기능 초안 만들기', exact: true }).click();
+  await expect.poll(async () => (await session()).state).toBe('running');
+  await expect(
+    page.getByRole('button', { name: '기능 초안 만드는 중', exact: true }),
+  ).toBeDisabled();
+  await page.getByRole('button', { name: '실행 중단', exact: true }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('interrupted');
+  expect((await session()).generationState).toBe('error');
+  expect((await session()).cleaned).toBe(true);
+  await fixture();
+  await page.getByRole('button', { name: '대화로 기능 초안 만들기', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '기능 초안 미리보기' })).toBeVisible({
+    timeout: 25000,
+  });
+  await page
+    .getByRole('textbox', { name: '질문에 대한 답변·정정 내용' })
+    .fill('다음 요청에서 과제 삭제도 포함해 주세요.');
+  await page.getByRole('button', { name: '답변·정정 보내기' }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 25000 }).toBe('exited');
+  await expect(
+    page.getByText('대화가 바뀌었어요. 이 초안을 취소하고 최신 대화로 다시 만들어 주세요.'),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: '처리 중…', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '이전 대화의 초안 취소' }).click();
+  await expect(page.getByRole('heading', { name: '기능 초안 미리보기' })).toHaveCount(0);
+  expect(await savedPlan()).toEqual(original);
+});
+
 test('AI IPC는 임의 프로젝트·인자·iframe을 거부한다', async () => {
   const results = await page.evaluate(async () => {
     const bridge = window.desktop;
@@ -291,6 +497,7 @@ test('AI IPC는 임의 프로젝트·인자·iframe을 거부한다', async () =
       await bridge.sendAIPrompt('../../', '--help', null, null),
       await bridge.resizeAISession(fake, 1000000, 1),
       await bridge.stopAISession(fake, fake),
+      await bridge.generateFeatureDraft(fake, null, null),
     ];
   });
   expect(results.every((result) => !result.ok)).toBe(true);
@@ -503,6 +710,66 @@ test('전송 전의 늦은 상태 응답은 새 실행 표시를 되돌리지 �
   await expect(page.getByRole('button', { name: '메시지 보내기' })).toBeVisible();
 });
 
+test('실제 Codex 연결: 요구분석 질문·답변 정정·기능 초안', async () => {
+  test.skip(process.env.ORBIT_LIVE_AI !== '1', '실제 계정 검사는 명시한 명령에서만 실행');
+  test.setTimeout(360000);
+  await openRequirements();
+  await page
+    .getByRole('textbox', { name: '만들고 싶은 서비스' })
+    .fill(
+      '개인이 과제 이름과 마감일을 저장하고 목록에서 확인하는 작은 앱. 계정과 공유 기능은 필요 없다.',
+    );
+  await page.getByRole('button', { name: '목표 보내고 질문받기' }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 120000 }).toBe('exited');
+  const first = await session();
+  const response =
+    stripVTControlCharacters(first.output)
+      .split(/\r?\ncodex\r?\n/u)
+      .at(-1) ?? '';
+  expect(response).not.toBe(stripVTControlCharacters(first.output));
+  expect(response).toMatch(/[?？]/u);
+  await page
+    .getByRole('textbox', { name: '질문에 대한 답변·정정 내용' })
+    .fill(
+      '답변과 정정입니다. Windows에서 혼자 사용하고 로컬에 저장합니다. 마감일은 필수이고 알림과 검색은 제외합니다. 등록과 목록 표시 두 기능만 먼저 만듭니다. 이 내용으로 요구사항을 확정합니다.',
+    );
+  await page.getByRole('button', { name: '답변·정정 보내기' }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 120000 }).toBe('exited');
+  expect((await session()).conversation).toBe(first.conversation);
+  await expect(page.getByRole('textbox', { name: '질문에 대한 답변·정정 내용' })).toHaveValue('');
+  await page.getByRole('button', { name: '대화로 기능 초안 만들기', exact: true }).click();
+  await expect.poll(async () => (await session()).state, { timeout: 120000 }).toBe('exited');
+  const generated = await session();
+  expect(generated.cleaned).toBe(true);
+  expect(generated.generationState).toBe('ready');
+  expect(generated.generatedPlan?.features.length).toBeGreaterThan(0);
+  expect(generated.generatedPlan?.verifications).toEqual([]);
+  await expect(page.getByRole('heading', { name: '기능 초안 미리보기' })).toBeVisible();
+  expect((await savedPlan()).features).toEqual([]);
+  await mkdir(resolve('.runtime', 'ai-evidence'), { recursive: true });
+  await writeFile(
+    resolve('.runtime', 'ai-evidence', 'live-requirements-generation.json'),
+    JSON.stringify(
+      {
+        kind: 'LIVE_REQUIREMENTS_AND_GENERATION',
+        firstQuestion: response,
+        conversationResumed: generated.conversation === first.conversation,
+        cleanupConfirmed: generated.cleaned,
+        diagnostic: generated.diagnostic,
+        plan: generated.generatedPlan,
+        savedBeforeApply: false,
+      },
+      null,
+      2,
+    ),
+  );
+  await mkdir(resolve('.runtime', 'screens'), { recursive: true });
+  await page.screenshot({
+    path: resolve('.runtime', 'screens', '22-t010-live.png'),
+    fullPage: true,
+  });
+});
+
 test('실제 Codex 연결: 중단·앱 종료', async () => {
   test.skip(
     process.env.ORBIT_LIVE_AI !== '1',
@@ -525,12 +792,21 @@ test('실제 Codex 연결: 중단·앱 종료', async () => {
   await page.getByRole('textbox', { name: 'Codex에게 보낼 메시지' }).fill(prompt);
   await page.getByRole('button', { name: '메시지 보내기' }).click();
   await expect.poll(async () => (await session()).state, { timeout: 30000 }).toBe('running');
-  const ownedPids = await app.evaluate(async (_electron, url) => {
-    const require = process.getBuiltinModule('module').createRequire(url);
-    const auditPath = process
-      .getBuiltinModule('url')
-      .fileURLToPath(new URL('./ai/process-audit.js', url));
-    const rows = await require(auditPath).processSnapshot();
+  await expect
+    .poll(() =>
+      app.evaluate(async (_electron, url) => {
+        const require = process.getBuiltinModule('module').createRequire(url);
+        const { aiSession } = require(url.replace('file:///', ''));
+        return (Reflect.get(globalThis, 'latestAuditRows') ?? []).some(
+          (row: { pid: number }) => row.pid === aiSession.host?.pid,
+        );
+      }, managerUrl),
+    )
+    .toBe(true);
+  const ownedPids = await app.evaluate(async () => {
+    // Reuse the application's observation: an extra concurrent CIM query would create
+    // an unexpected sibling PowerShell/console inside the very tree being audited.
+    const rows = Reflect.get(globalThis, 'latestAuditRows') as { pid: number; parent: number }[];
     const owned = new Set<number>([process.pid]);
     let grew = true;
     while (grew) {
@@ -543,11 +819,43 @@ test('실제 Codex 연결: 중단·앱 종료', async () => {
     }
     return [...owned];
   }, managerUrl);
+  const failureFile = resolve('.runtime', 'ai-evidence', `shutdown-warning-${randomUUID()}.json`);
+  await mkdir(resolve('.runtime', 'ai-evidence'), { recursive: true });
+  await app.evaluate(
+    async ({ dialog }, config) => {
+      const require = process.getBuiltinModule('module').createRequire(config.managerUrl);
+      const { aiSession } = require(config.managerUrl.replace('file:///', ''));
+      dialog.showMessageBox = async () => {
+        await process.getBuiltinModule('fs/promises').writeFile(
+          config.failureFile,
+          JSON.stringify(
+            {
+              state: aiSession.state,
+              diagnostic: aiSession.diagnostic,
+            },
+            null,
+            2,
+          ),
+        );
+        // Close only this test app; the assertion below still fails if cleanup was uncertain.
+        return { response: 1, checkboxChecked: false };
+      };
+    },
+    { managerUrl, failureFile },
+  );
   const closed = app.waitForEvent('close');
   await app.evaluate(({ BrowserWindow }) => {
-    BrowserWindow.getAllWindows()[0].close();
+    // Return the automation reply before asking the app to close its transport.
+    setTimeout(() => BrowserWindow.getAllWindows()[0].close(), 100);
   });
   await closed;
+  const shutdownWarning = await readFile(failureFile, 'utf8').catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    },
+  );
+  expect(shutdownWarning, '앱 정리 경고가 발생하면 종료 검사는 실패로 남긴다.').toBeNull();
   const pidList = ownedPids
     .map((pid) => {
       if (!Number.isSafeInteger(pid)) throw new Error('invalid pid');

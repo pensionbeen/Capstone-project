@@ -77,6 +77,16 @@ test('인증 우회를 숨기지 않고 입력과 화면 크기를 제한한다'
   assert.equal(sizeIsValid(5000, 24), false);
   assert.equal(sizeIsValid(80, NaN), false);
 });
+
+test('기능 생성 응답 경로는 재개 명령 앞의 독립 인자로 전달한다', () => {
+  const id = '12345678-1234-4234-8234-123456789012';
+  const file = 'C:\\Temp\\한글 응답\\response.json';
+  const args = codexArguments('C:\\project', '초안 만들기', id, file);
+  assert.equal(args[args.indexOf('--output-last-message') + 1], file);
+  assert.ok(args.indexOf('--output-last-message') < args.indexOf('resume'));
+  assert.equal(args.at(-2), '--');
+  assert.equal(args.filter((arg) => arg === file).length, 1);
+});
 test('AI 응답에 들어간 상태 문자열을 실행 설정으로 해석하지 않는다', () => {
   const cwd = 'C:\\프로젝트';
   const header = `OpenAI Codex v${CODEX_VERSION}\n--------\nworkdir: ${cwd}\nmodel: gpt-6.1-sol\nprovider: openai\napproval: never\nsandbox: read-only\nreasoning effort: high\nsession id: 12345678-1234-4234-8234-123456789012\n--------\nuser\n`;

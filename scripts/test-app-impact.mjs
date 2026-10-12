@@ -16,7 +16,11 @@ const args = process.argv.slice(2);
 const live = args[0] === '--live';
 if (live) args.shift();
 if (!args.length) throw new Error('Pass Playwright test paths and filters explicitly.');
-const settings = [join(homedir(), '.codex/config.toml'), join(homedir(), '.gemini/settings.json')];
+const settings = [
+  join(homedir(), '.codex/config.toml'),
+  join(homedir(), '.gemini/settings.json'),
+  join(homedir(), '.gemini/antigravity-cli/settings.json'),
+];
 async function hashes() {
   return Promise.all(
     settings.map(async (file) => {
@@ -60,7 +64,7 @@ const ps = join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1.0/powersh
 const baselineTime = report.startedAt;
 async function resourceSample() {
   const script =
-    "$ErrorActionPreference='Stop'; @(Get-Process | Where-Object { $_.ProcessName -in @('msedge','electron','powershell','explorer','blender') } | ForEach-Object { [pscustomobject]@{ name=$_.ProcessName; pid=$_.Id; created=$_.StartTime.ToUniversalTime().ToString('o'); cpuSeconds=$_.CPU; workingSet=$_.WorkingSet64; responding=$_.Responding } }) | ConvertTo-Json -Compress";
+    "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; @(Get-Process | Where-Object { $_.ProcessName -in @('msedge','electron','powershell','explorer','blender') } | ForEach-Object { $created=$_.StartTime; [pscustomobject]@{ name=$_.ProcessName; pid=$_.Id; created=if($created){$created.ToUniversalTime().ToString('o')}else{$null}; cpuSeconds=$_.CPU; workingSet=$_.WorkingSet64; responding=$_.Responding } }) | ConvertTo-Json -Compress";
   const result = await promisify(execFile)(
     ps,
     ['-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],

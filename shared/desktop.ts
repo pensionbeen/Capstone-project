@@ -43,6 +43,11 @@ export interface DesktopBridge {
     expectedOutputId: string | null,
     expectedRunId: string | null,
   ) => Promise<AIReply>;
+  generateFeatureDraft: (
+    projectId: string,
+    expectedOutputId: string | null,
+    expectedRunId: string | null,
+  ) => Promise<AIReply>;
   readAISession: (
     projectId: string,
     after: number,

@@ -45,6 +45,11 @@ function fixture() {
       };
       return { ok: true, runId: state.id ?? undefined, outputId: output.id };
     },
+    generate: () => {
+      submissions++;
+      state = { ...state, id: randomUUID(), state: 'running', generationState: 'running' };
+      return { ok: true, runId: state.id ?? undefined, outputId: output.id };
+    },
     stop: () => {
       stops++;
       state = { ...state, state: 'interrupted' };
@@ -533,4 +538,25 @@ test('재연결 횟수 한도와 명시적 재시도, 인증 오류는 즉시 �
   assert.equal(Reflect.get(client, 'attempts'), 8);
   assert.equal(client.reconnect().ok, true);
   assert.equal(client.readFailure().connectionError.code, 'reconnecting');
+});
+
+test('기능 생성은 인증·현재 실행 식별자를 확인하고 같은 요청을 중복 실행하지 않는다', async (t) => {
+  const f = fixture();
+  const service = await startLocalApi(f.backend, 'orbit://app');
+  t.after(() => service.close());
+  const path = `/v1/projects/${f.id}/session/generate`;
+  const body = JSON.stringify({ expectedOutputId: f.output.id, expectedRunId: null });
+  assert.equal(
+    (await http(service, path, { body, headers: { Authorization: 'invalid' } })).status,
+    401,
+  );
+  assert.equal(f.submissions, 0);
+  const requestHeaders = headers(service);
+  const first = await http(service, path, { body, headers: requestHeaders });
+  assert.equal(first.status, 200);
+  const replay = await http(service, path, { body, headers: requestHeaders });
+  assert.deepEqual(replay.data, first.data);
+  assert.equal(f.submissions, 1);
+  assert.equal((await http(service, path, { body })).status, 409);
+  assert.equal(f.submissions, 1);
 });

@@ -1,3 +1,5 @@
+import type { ProjectFeaturePlan } from './feature-plan.js';
+
 export type AIState =
   | 'idle'
   | 'starting'
@@ -32,6 +34,9 @@ export interface AISnapshot {
   purpose: 'chat' | 'requirements';
   requirementsGoal: string | null;
   requirementsGoalConfirmed: boolean;
+  generationState: 'idle' | 'running' | 'ready' | 'error';
+  generatedPlan: ProjectFeaturePlan | null;
+  generationMessage: string;
   outputId: string | null;
   id: string | null;
   state: AIState;
@@ -52,6 +57,9 @@ export const emptyAISnapshot: AISnapshot = {
   purpose: 'chat',
   requirementsGoal: null,
   requirementsGoalConfirmed: false,
+  generationState: 'idle',
+  generatedPlan: null,
+  generationMessage: '',
   outputId: null,
   id: null,
   state: 'idle',

@@ -1,6 +1,7 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react';
-import { type AIState, emptyAISnapshot } from '../shared/ai';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { type AIState, activeAIStates, emptyAISnapshot } from '../shared/ai';
 import { descendantIds, removePlanFeature, updatePlanFeature } from '../shared/feature-editing';
+import { appendGeneratedPlan } from '../shared/feature-generation';
 import {
   emptyFeaturePlan,
   type ProjectFeaturePlan,
@@ -10,6 +11,7 @@ import type { RequirementsDraft } from '../shared/requirements';
 import type { ProjectCatalog } from '../shared/storage';
 import { canRecordVerification, nextVerificationTime } from '../shared/verification';
 import { FeatureEditor, VerificationEditor, WorkDetails } from './components/FeatureDialogs';
+import type { PendingFeatureDraft } from './components/FeatureGenerationPanel';
 import type { IconName } from './components/ui';
 import { Badge, Brand, Button, Icon, Modal } from './components/ui';
 import {
@@ -55,6 +57,11 @@ const AIConsole = lazy(() =>
 const RequirementsPage = lazy(() =>
   import('./pages/Requirements').then((module) => ({ default: module.RequirementsPage })),
 );
+const FeatureGenerationPanel = lazy(() =>
+  import('./components/FeatureGenerationPanel').then((module) => ({
+    default: module.FeatureGenerationPanel,
+  })),
+);
 const emptyAnalysis: AnalysisDraft = {
   goal: '',
   started: false,
@@ -79,7 +86,13 @@ export default function App() {
   const [protection, setProtection] = useState(initialProtection);
   const [analysis, setAnalysis] = useState(emptyAnalysis);
   const [requirements, setRequirements] = useState<RequirementsDraft>({ goal: '', answer: '' });
+  const [requirementsBusy, setRequirementsBusy] = useState(false);
+  const [generatedDraft, setGeneratedDraft] = useState<PendingFeatureDraft | null>(null);
+  const handledGeneration = useRef<string | null>(null);
   const [featurePlan, setFeaturePlan] = useState<ProjectFeaturePlan>(emptyFeaturePlan());
+  const activeProjectRef = useRef<string | undefined>(undefined);
+  const featurePlanRef = useRef(featurePlan);
+  featurePlanRef.current = featurePlan;
   const features = featurePlan.features;
   const records = featurePlan.verifications;
   const planSaveLock = useRef(false);
@@ -102,6 +115,22 @@ export default function App() {
   }
   const [showAI, setShowAI] = useState(false);
   const [aiStatus, setAIStatus] = useState(emptyAISnapshot);
+  useEffect(() => {
+    if (
+      aiStatus.id &&
+      aiStatus.outputId &&
+      aiStatus.generationState === 'ready' &&
+      aiStatus.generatedPlan &&
+      handledGeneration.current !== aiStatus.id
+    ) {
+      handledGeneration.current = aiStatus.id;
+      setGeneratedDraft({
+        runId: aiStatus.id,
+        outputId: aiStatus.outputId,
+        plan: aiStatus.generatedPlan,
+      });
+    }
+  }, [aiStatus]);
   const aiLabels: Record<AIState, string> = {
     idle: '연결 전',
     starting: '준비 중',
@@ -125,6 +154,15 @@ export default function App() {
   const currentFeature = features.find((feature) => feature.id === openedFeature);
   const pageKey = `${inWorkspace ? view : step}`;
   const desktopProjectId = project?.desktopId;
+  const changeRequirements = useCallback(
+    (update: Parameters<typeof setRequirements>[0]) => {
+      setRequirements((current) => {
+        if (activeProjectRef.current !== desktopProjectId) return current;
+        return typeof update === 'function' ? update(current) : update;
+      });
+    },
+    [desktopProjectId],
+  );
   useEffect(() => {
     if (!window.desktop) return;
     let disposed = false;
@@ -233,11 +271,15 @@ export default function App() {
     );
   }
   function displayProject(value: Project | null, plan = emptyFeaturePlan()) {
+    activeProjectRef.current = value?.desktopId;
+    setAIStatus(emptyAISnapshot);
     setShowAI(false);
     setProject(value);
     setPendingProject(null);
     setAnalysis(emptyAnalysis);
     setRequirements({ goal: '', answer: '' });
+    setGeneratedDraft(null);
+    handledGeneration.current = null;
     setFeaturePlan(plan);
     setEditing(null);
     setOpenedFeature(null);
@@ -349,6 +391,27 @@ export default function App() {
     if (!(await persistPlan({ features: next, dependencies: [], verifications: [] }))) return;
     setShowRegenerate(false);
     setStep(3);
+  }
+  async function applyGeneratedDraft(): Promise<string | null> {
+    if (!generatedDraft || !project?.desktopId || !window.desktop)
+      return '프로젝트와 초안을 확인해 주세요.';
+    const current = await window.desktop.readAIStatus(project.desktopId);
+    if (activeProjectRef.current !== project.desktopId || featurePlanRef.current !== featurePlan)
+      return '프로젝트나 기능 목록이 바뀌었어요. 초안을 다시 확인해 주세요.';
+    if (
+      current.id !== generatedDraft.runId ||
+      current.outputId !== generatedDraft.outputId ||
+      !current.cleanupConfirmed ||
+      activeAIStates.includes(current.state)
+    )
+      return '대화 상태가 바뀌었어요. 최신 대화로 초안을 다시 만들어 주세요.';
+    const merged = appendGeneratedPlan(featurePlan, generatedDraft.plan);
+    if (!merged.ok) return merged.message;
+    if (!(await persistPlan(merged.plan)))
+      return '초안을 저장하지 못했어요. 기존 기능과 입력은 유지했어요. 다시 시도해 주세요.';
+    setGeneratedDraft(null);
+    setStep(3);
+    return null;
   }
   function addFeature(kind: 'leaf' | 'group' = 'leaf', parentId: string | null = null) {
     if (planSaveLock.current) return;
@@ -674,14 +737,25 @@ export default function App() {
             {!inWorkspace && step === 2 && project?.desktopId && (
               <Suspense fallback={<p>요구분석 화면을 준비하고 있어요.</p>}>
                 <RequirementsPage
+                  key={project.desktopId}
                   project={project}
                   draft={requirements}
-                  onChange={setRequirements}
+                  onChange={changeRequirements}
                   enabled={providers.includes('Codex')}
-                  busy={aiBusy || planSaving}
+                  busy={aiBusy || requirementsBusy || planSaving}
+                  onBusyChange={setRequirementsBusy}
                   onBack={() => setStep(1)}
                   onManual={() => setStep(3)}
-                />
+                >
+                  <FeatureGenerationPanel
+                    projectId={project.desktopId}
+                    snapshot={aiStatus}
+                    draft={generatedDraft}
+                    busy={aiBusy || requirementsBusy || planSaving}
+                    onChange={setGeneratedDraft}
+                    onApply={applyGeneratedDraft}
+                  />
+                </RequirementsPage>
               </Suspense>
             )}
             {!inWorkspace && step === 2 && !project?.desktopId && (
