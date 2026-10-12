@@ -13,6 +13,28 @@ const inside = (root: string, target: string) => {
   return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`));
 };
 
+// Shared by file browsing and feature-session preparation; this is not OS isolation.
+export async function checkedProjectPath(root: string, path: string, allowRoot = false) {
+  if (!validRelativePath(path, allowRoot) || !isAbsolute(root)) throw new Error('invalid path');
+  const canonicalRoot = await realpath(root);
+  // A moved/replaced root must be selected again; do not follow a newly introduced link.
+  if (
+    resolve(root).toLowerCase() !== canonicalRoot.toLowerCase() ||
+    (await lstat(root)).isSymbolicLink()
+  )
+    throw new Error('changed root');
+  let target = canonicalRoot;
+  for (const part of path ? path.split('/') : []) {
+    target = join(target, part);
+    const info = await lstat(target);
+    if (info.isSymbolicLink()) throw new Error('linked path');
+    const canonical = await realpath(target);
+    if (!inside(canonicalRoot, canonical) || relative(target, canonical) !== '')
+      throw new Error('outside project');
+  }
+  return { target, info: await lstat(target) };
+}
+
 // A fixed text editor opens a file as data. Never use a file association or a shell.
 export function launchTextEditor(file: string): Promise<void> {
   if (
@@ -39,32 +61,11 @@ export class ProjectFiles {
   private active = 0;
   constructor(private launch = launchTextEditor) {}
 
-  private async checked(root: string, path: string, allowRoot = false) {
-    if (!validRelativePath(path, allowRoot) || !isAbsolute(root)) throw new Error('invalid path');
-    const canonicalRoot = await realpath(root);
-    // A moved/replaced root must be selected again; do not follow a newly introduced link.
-    if (
-      resolve(root).toLowerCase() !== canonicalRoot.toLowerCase() ||
-      (await lstat(root)).isSymbolicLink()
-    )
-      throw new Error('changed root');
-    let target = canonicalRoot;
-    for (const part of path ? path.split('/') : []) {
-      target = join(target, part);
-      const info = await lstat(target);
-      if (info.isSymbolicLink()) throw new Error('linked path');
-      const canonical = await realpath(target);
-      if (!inside(canonicalRoot, canonical) || relative(target, canonical) !== '')
-        throw new Error('outside project');
-    }
-    return { target, info: await lstat(target) };
-  }
-
   async list(root: string, path: string): Promise<FileListResult> {
     if (this.active >= 4) return { ok: false, message: '파일 조회가 끝난 뒤 다시 시도해 주세요.' };
     this.active++;
     try {
-      const { target, info } = await this.checked(root, path, true);
+      const { target, info } = await checkedProjectPath(root, path, true);
       if (!info.isDirectory()) throw new Error('not directory');
       const entries: FileEntry[] = [];
       let truncated = false;
@@ -105,10 +106,10 @@ export class ProjectFiles {
     if (this.active >= 4) return { ok: false, message: '파일 작업이 끝난 뒤 다시 시도해 주세요.' };
     this.active++;
     try {
-      const { target, info } = await this.checked(root, path);
+      const { target, info } = await checkedProjectPath(root, path);
       if (!info.isFile() || info.size > 2 * 1024 * 1024) throw new Error('not a small file');
       // Recheck at the handoff. An external program still opens by path; this is not OS isolation.
-      const checked = await this.checked(root, path);
+      const checked = await checkedProjectPath(root, path);
       if (
         checked.target !== target ||
         !checked.info.isFile() ||

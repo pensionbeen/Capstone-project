@@ -14,6 +14,7 @@ import {
 import { emptyAISnapshot } from '../shared/ai.js';
 import type { FolderResult } from '../shared/desktop.js';
 import type { ProjectFeaturePlan } from '../shared/feature-plan.js';
+import { validFeatureSessionInput } from '../shared/feature-session.js';
 import { validRequirementsInput } from '../shared/requirements.js';
 import type { ProjectCatalog, ProjectResult, StorageResult } from '../shared/storage.js';
 import { promptIsValid, rejected, sizeIsValid, UUID } from './ai/contracts.js';
@@ -31,7 +32,10 @@ let mainWindow: BrowserWindow | null = null;
 let selecting = false;
 let allowExit = false;
 let closing: Promise<void> | undefined;
-export const aiSession = new SessionManager();
+export const aiSession = new SessionManager({
+  loadFeature: (projectId, featureId) =>
+    projectStore?.featurePlan(projectId).features.find((feature) => feature.id === featureId),
+});
 export const projectFiles = new ProjectFiles();
 let localApi: Awaited<ReturnType<typeof startLocalApi>> | undefined;
 let apiClient: LocalApiClient | undefined;
@@ -449,6 +453,34 @@ void app.whenReady().then(async () => {
       return rejected('프로젝트와 요구분석 입력을 확인해 주세요.');
     return changingAI(() =>
       apiClient?.command(id, 'requirements', { action, input, expectedOutputId, expectedRunId }),
+    );
+  });
+  ipcMain.handle('ai:feature', (event, ...args: unknown[]) => {
+    const [id, action, featureId, expectedRevision, input, expectedOutputId, expectedRunId] = args;
+    if (
+      !trusted(event) ||
+      selecting ||
+      args.length !== 7 ||
+      !projectArgument(id) ||
+      !projectArgument(featureId) ||
+      !Number.isSafeInteger(expectedRevision) ||
+      Number(expectedRevision) < 1 ||
+      Number(expectedRevision) > 2147483647 ||
+      (action !== 'start' && action !== 'answer') ||
+      !validFeatureSessionInput(action, input) ||
+      !(expectedOutputId === null || projectArgument(expectedOutputId)) ||
+      !(expectedRunId === null || projectArgument(expectedRunId))
+    )
+      return rejected('프로젝트·저장된 기능·대화 요청을 확인해 주세요.');
+    return changingAI(() =>
+      apiClient?.command(id, 'feature', {
+        action,
+        featureId,
+        expectedRevision,
+        input,
+        expectedOutputId,
+        expectedRunId,
+      }),
     );
   });
   ipcMain.handle('ai:reconnect', (event, ...args: unknown[]) => {

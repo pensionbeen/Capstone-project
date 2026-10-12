@@ -116,6 +116,8 @@ export function FeatureWorkspace({
   onDelete,
   onAdd,
   onLink,
+  onConversation,
+  conversationBlock,
 }: {
   project: Project;
   plan: ProjectFeaturePlan;
@@ -124,6 +126,8 @@ export function FeatureWorkspace({
   onDelete: (feature: Feature) => void;
   onAdd: (kind: 'leaf' | 'group', parentId?: string | null) => void;
   onLink: (feature: Feature, path: string) => void;
+  onConversation: (feature: Feature) => void;
+  conversationBlock: (feature: Feature) => string;
 }) {
   const [selectedId, setSelectedId] = useState(plan.features[0]?.id ?? '');
   const [collapsed, setCollapsed] = useState<string[]>([]);
@@ -238,6 +242,16 @@ export function FeatureWorkspace({
               </Badge>
               <h2>{selected.title}</h2>
               <p>{selected.description}</p>
+              <Button
+                variant="secondary"
+                disabled={Boolean(conversationBlock(selected))}
+                onClick={() => onConversation(selected)}
+              >
+                기능 AI 대화 열기
+              </Button>
+              {conversationBlock(selected) && (
+                <p className="field-hint">{conversationBlock(selected)}</p>
+              )}
               <div className="manager-actions">
                 <Button variant="secondary" disabled={busy} onClick={() => onEdit(selected)}>
                   선택한 기능 수정

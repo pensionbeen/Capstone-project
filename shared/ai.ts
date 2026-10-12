@@ -1,4 +1,5 @@
 import type { ProjectFeaturePlan } from './feature-plan.js';
+import type { FeatureSessionContext } from './feature-session.js';
 
 export type AIState =
   | 'idle'
@@ -31,7 +32,8 @@ export interface TerminalChunk {
 }
 
 export interface AISnapshot {
-  purpose: 'chat' | 'requirements';
+  purpose: 'chat' | 'requirements' | 'feature';
+  featureContext: FeatureSessionContext | null;
   requirementsGoal: string | null;
   requirementsGoalConfirmed: boolean;
   generationState: 'idle' | 'running' | 'ready' | 'error';
@@ -55,6 +57,7 @@ export const activeAIStates: AIState[] = ['starting', 'running', 'stopping'];
 
 export const emptyAISnapshot: AISnapshot = {
   purpose: 'chat',
+  featureContext: null,
   requirementsGoal: null,
   requirementsGoalConfirmed: false,
   generationState: 'idle',

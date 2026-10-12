@@ -114,7 +114,10 @@ export default function App() {
     setNotice({ message, tone });
   }
   const [showAI, setShowAI] = useState(false);
+  const [aiFeatureId, setAIFeatureId] = useState<string | null>(null);
+  const [featureConversationBusy, setFeatureConversationBusy] = useState(false);
   const [aiStatus, setAIStatus] = useState(emptyAISnapshot);
+  const [aiObservationFailed, setAIObservationFailed] = useState(false);
   useEffect(() => {
     if (
       aiStatus.id &&
@@ -150,8 +153,29 @@ export default function App() {
   const includedFeatures = features.filter(
     (feature) => feature.included && feature.kind === 'leaf',
   );
-  const aiBusy = ['starting', 'running', 'stopping'].includes(aiStatus.state);
+  const aiBusy =
+    activeAIStates.includes(aiStatus.state) || featureConversationBusy || requirementsBusy;
   const currentFeature = features.find((feature) => feature.id === openedFeature);
+  const conversationFeature = features.find((feature) => feature.id === aiFeatureId);
+  function featureConversationBlock(feature: Feature | undefined) {
+    if (planSaving || planSaveLock.current) return '기능 저장을 마친 뒤 대화를 시작해 주세요.';
+    if (!project?.desktopId || project.sample)
+      return '실제 프로젝트 폴더를 선택해야 기능 대화를 실행할 수 있어요.';
+    if (!providers.includes('Codex')) return '연결 설정에서 Codex를 선택해 주세요.';
+    if (!feature) return '현재 목록에 없는 기능이에요. 다른 기능을 선택해 주세요.';
+    if (feature.kind !== 'leaf') return '묶음 안의 기능을 선택해 주세요.';
+    if (!feature.included)
+      return '제외한 기능은 대화를 시작할 수 없어요. 기능을 포함한 뒤 시작해 주세요.';
+    return '';
+  }
+  function openAI(featureId?: string) {
+    const runningFeatureId = aiStatus.featureContext?.featureId ?? aiFeatureId;
+    const currentConversationId =
+      aiStatus.purpose === 'feature' ? runningFeatureId : aiStatus.id ? null : aiFeatureId;
+    setAIFeatureId(featureId ?? currentConversationId);
+    setOpenedFeature(null);
+    setShowAI(true);
+  }
   const pageKey = `${inWorkspace ? view : step}`;
   const desktopProjectId = project?.desktopId;
   const changeRequirements = useCallback(
@@ -230,15 +254,19 @@ export default function App() {
   }
   useEffect(() => {
     setAIStatus(emptyAISnapshot);
+    setAIObservationFailed(false);
     if (!desktopProjectId || !window.desktop) return;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       try {
         const snapshot = await window.desktop?.readAIStatus(desktopProjectId);
-        if (!disposed && snapshot) setAIStatus(snapshot);
+        if (!disposed && snapshot) {
+          setAIStatus(snapshot);
+          setAIObservationFailed(false);
+        }
       } catch {
-        /* The conversation window displays connection errors. */
+        if (!disposed) setAIObservationFailed(true);
       }
       if (!disposed) timer = setTimeout(poll, 800);
     };
@@ -274,6 +302,7 @@ export default function App() {
     activeProjectRef.current = value?.desktopId;
     setAIStatus(emptyAISnapshot);
     setShowAI(false);
+    setAIFeatureId(null);
     setProject(value);
     setPendingProject(null);
     setAnalysis(emptyAnalysis);
@@ -641,7 +670,7 @@ export default function App() {
           </div>
           <div className="topbar-right">
             {project?.desktopId && providers.includes('Codex') && (
-              <Button variant="ghost" onClick={() => setShowAI(true)} icon="code">
+              <Button variant="ghost" onClick={() => openAI()} icon="code">
                 AI 대화
               </Button>
             )}
@@ -701,7 +730,7 @@ export default function App() {
                 <ConnectionPage
                   connectionSummary={connectionSummary}
                   actualProject={Boolean(project?.desktopId)}
-                  onOpenAI={() => setShowAI(true)}
+                  onOpenAI={() => openAI()}
                   providers={providers}
                   onToggleProvider={(provider) => {
                     setProviders((selected) =>
@@ -796,6 +825,9 @@ export default function App() {
                 project={project}
                 features={includedFeatures}
                 records={records}
+                aiStatus={aiStatus}
+                aiObservationFailed={aiObservationFailed}
+                onOpenConversation={() => openAI()}
                 onOpen={(feature) => {
                   if (!planSaveLock.current) setOpenedFeature(feature.id);
                 }}
@@ -812,6 +844,8 @@ export default function App() {
                 onEdit={openEditor}
                 onDelete={setDeleting}
                 onAdd={addFeature}
+                onConversation={(feature) => openAI(feature.id)}
+                conversationBlock={featureConversationBlock}
                 onLink={(feature, path) =>
                   void saveFeature(
                     { ...feature, relatedPaths: [...(feature.relatedPaths ?? []), path] },
@@ -880,7 +914,27 @@ export default function App() {
       )}
       {showAI && project && (
         <Suspense fallback={<span role="status">AI 대화 화면을 여는 중이에요.</span>}>
-          <AIConsole project={project} onClose={() => setShowAI(false)} />
+          <AIConsole
+            key={`${project.desktopId ?? project.path}:${aiFeatureId ?? 'chat'}`}
+            project={project}
+            onClose={() => setShowAI(false)}
+            onBusyChange={setFeatureConversationBusy}
+            onNewChat={() => {
+              setAIFeatureId(null);
+              setAIStatus(emptyAISnapshot);
+            }}
+            featureSession={
+              aiFeatureId
+                ? {
+                    featureId: aiFeatureId,
+                    feature: conversationFeature,
+                    enabled: !featureConversationBlock(conversationFeature),
+                    blockedReason: featureConversationBlock(conversationFeature),
+                    canSubmit: () => !planSaveLock.current && !projectSaving,
+                  }
+                : undefined
+            }
+          />
         </Suspense>
       )}
       {editing && (
@@ -898,6 +952,8 @@ export default function App() {
       {currentFeature && (
         <WorkDetails
           feature={currentFeature}
+          blockedReason={featureConversationBlock(currentFeature)}
+          onAI={() => openAI(currentFeature.id)}
           onClose={() => setOpenedFeature(null)}
           onEdit={() => {
             if (planSaveLock.current) return;

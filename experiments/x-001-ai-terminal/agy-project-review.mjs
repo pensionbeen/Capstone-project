@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { runtime, report, capture } from './lib.mjs';
 import { snapshot } from './snapshot.mjs';
 import { validatePacket, promptFor } from './review-core.mjs';
-import { processSnapshot, SessionProcesses, validateSnapshot } from './managed-processes.mjs';
+import { processSnapshot, SessionProcesses, validateSnapshot, snapshotQueryEvidence } from './managed-processes.mjs';
 import { agyModel, agyReviewedVersion, verifyProjectPolicy, canaryEvidence, isCanaryTool, reviewInit, hasAgyAuthOverride, parseAgyEvent } from './agy-project-core.mjs';
 
 // Existing dedicated test project only. Setup is performed through the CLI's
@@ -15,6 +15,9 @@ const [packetFile, projectId, cwd, proofFile] = process.argv.slice(2);
 const canary = packetFile === '--canary';
 const hash = value => createHash('sha256').update(value).digest('hex');
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+// This reviewer has no managed-supervisor outer query deadline. Keep its
+// query allowance separate from that supervisor's 2s query / 3s outer bounds.
+const reviewSnapshotOptions = Object.freeze({ timeoutMs: 4000 });
 const lockPath = path.join(runtime, 'ai-review.lock');
 let lock, retainLock = false, reason, result, canaryProof, observations = {};
 try {
@@ -69,7 +72,7 @@ try {
   if (!canary && !canaryEvidence(JSON.parse(await readFile(proofFile, 'utf8')), projectId, cwd, binding).pass) {
     throw new Error('FOUR_VERSION_BOUND_CANARY_DENIALS_REQUIRED');
   }
-  const before = await snapshot(cwd), baseline = await processSnapshot();
+  const before = await snapshot(cwd), baseline = await processSnapshot(reviewSnapshotOptions);
   validateSnapshot(baseline);
   if (!baseline.some(row => row.pid === process.pid)) throw new Error('SUPERVISOR_IDENTITY_UNCONFIRMED');
   const child = spawn(file, ['--project', projectId, '--input-format', 'stream-json', '--output-format', 'stream-json',
@@ -122,7 +125,7 @@ try {
   try {
     while (!closed) {
       if (Date.now() >= deadline) fail('REVIEW_TIMEOUT');
-      try { tracker.observe(await processSnapshot()); if (tracker.uncertain) fail('OWNERSHIP_UNCONFIRMED'); }
+      try { tracker.observe(await processSnapshot(reviewSnapshotOptions)); if (tracker.uncertain) fail('OWNERSHIP_UNCONFIRMED'); }
       catch { fail('PROCESS_AUDIT_FAILED'); }
       if (reason && !stopAt) { stopAt = Date.now(); child.stdin.end(); }
       if (stopAt && Date.now() - stopAt >= 4000 && !killAt) {
@@ -141,7 +144,7 @@ try {
       fail('AGY_CLOSE_UNCONFIRMED'); retainLock = true;
       try { child.kill(); } catch { /* preserve failure */ }
     }
-    try { tracker.observe(await processSnapshot()); }
+    try { tracker.observe(await processSnapshot(reviewSnapshotOptions)); }
     catch { fail('FINAL_PROCESS_AUDIT_FAILED'); retainLock = true; }
     if (tracker.alive().length || tracker.uncertain) { fail('DESCENDANT_CLEANUP_UNCONFIRMED'); retainLock = true; }
     child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy();
@@ -187,6 +190,7 @@ try {
 }
 await report(canary ? 'agy-project-canary' : 'agy-project-review', { ...canaryProof,
   status: reason ? 'BLOCKED_OR_FAILED' : canary ? 'FOUR_CANARY_DENIALS_OBSERVED' : 'REVIEW_OBSERVED_PROJECT_DENY_ENFORCED',
-  reason: reason || null, observations, response: result, lockRetained: retainLock,
+  reason: reason || null, observations: { ...observations, snapshotQueries: snapshotQueryEvidence() },
+  response: result, lockRetained: retainLock,
   rawTranscriptSavedByRunner: false, enforcementScope: 'PROJECT_PERMISSION_ENGINE_NOT_OS_CONTAINMENT' });
 process.exitCode = reason ? 2 : 0;

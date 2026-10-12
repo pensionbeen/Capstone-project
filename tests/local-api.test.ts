@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { mkdir, mkdtemp } from 'node:fs/promises';
 import { request } from 'node:http';
+import { resolve } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { WebSocket } from 'ws';
 import { OutputBuffer } from '../dist/desktop/electron/ai/contracts.js';
+import { SessionManager } from '../dist/desktop/electron/ai/session-manager.js';
 import { LocalApiClient } from '../dist/desktop/electron/local-api/client.js';
 import { type SessionBackend, startLocalApi } from '../dist/desktop/electron/local-api/server.js';
 import { emptyAISnapshot } from '../shared/ai.ts';
+import type { StoredFeature } from '../shared/feature-plan.ts';
 
 function fixture() {
   const id = randomUUID();
@@ -42,6 +46,24 @@ function fixture() {
         state: 'running',
         purpose: 'requirements',
         requirementsGoal: input,
+      };
+      return { ok: true, runId: state.id ?? undefined, outputId: output.id };
+    },
+    feature: async (_id, _action, featureId, revision) => {
+      submissions++;
+      state = {
+        ...state,
+        id: randomUUID(),
+        state: 'running',
+        purpose: 'feature',
+        featureContext: {
+          featureId,
+          revision,
+          title: '저장된 기능',
+          description: '',
+          criteria: '저장된 조건 확인',
+          relatedPaths: [],
+        },
       };
       return { ok: true, runId: state.id ?? undefined, outputId: output.id };
     },
@@ -559,4 +581,225 @@ test('기능 생성은 인증·현재 실행 식별자를 확인하고 같은 �
   assert.equal(f.submissions, 1);
   assert.equal((await http(service, path, { body })).status, 409);
   assert.equal(f.submissions, 1);
+});
+
+test('기능 대화 REST는 저장 ID·버전만 받고 문맥·cwd·명령 주입과 오래된 요청을 거부한다', async (t) => {
+  const f = fixture();
+  const service = await startLocalApi(f.backend, 'orbit://app');
+  t.after(() => service.close());
+  const client = new LocalApiClient(service.endpoint);
+  t.after(() => client.close());
+  const path = `/v1/projects/${f.id}/session/feature`;
+  const body = {
+    action: 'start',
+    featureId: randomUUID(),
+    expectedRevision: 1,
+    input: '',
+    expectedOutputId: f.output.id,
+    expectedRunId: null,
+  };
+  assert.equal(
+    (
+      await http(service, path, {
+        body: JSON.stringify(body),
+        headers: { Authorization: 'invalid' },
+      })
+    ).status,
+    401,
+  );
+  assert.equal(
+    (
+      await http(service, `/v1/projects/${randomUUID()}/session/feature`, {
+        body: JSON.stringify(body),
+      })
+    ).status,
+    404,
+  );
+  for (const patch of [
+    { cwd: 'C:/outside' },
+    { context: { title: '주입' } },
+    { prompt: '명령' },
+    { file: 'cmd.exe' },
+    { args: ['/c', 'whoami'] },
+    { action: 'execute' },
+    { featureId: 'invalid' },
+    { expectedRevision: 0 },
+    { expectedRevision: 1.5 },
+    { expectedRevision: 2147483648 },
+    { input: '가'.repeat(2001) },
+  ]) {
+    assert.equal(
+      (await http(service, path, { body: JSON.stringify({ ...body, ...patch }) })).status,
+      400,
+      JSON.stringify(patch),
+    );
+  }
+  for (const patch of [{ expectedOutputId: randomUUID() }, { expectedRunId: randomUUID() }])
+    assert.equal(
+      (await http(service, path, { body: JSON.stringify({ ...body, ...patch }) })).status,
+      409,
+    );
+  assert.equal(f.submissions, 0);
+  const reply = await client.command(f.id, 'feature', body);
+  assert.equal(reply.ok, true, reply.message);
+  const state = await client.status(f.id);
+  assert.equal(state.purpose, 'feature');
+  assert.equal(state.featureContext?.featureId, body.featureId);
+  assert.equal(state.featureContext?.revision, 1);
+  assert.equal((await http(service, path, { body: JSON.stringify(body) })).status, 409);
+  assert.equal(f.submissions, 1);
+});
+
+test('기능 대화 비동기 검사 중 같은 요청 ID 재전송은 진행 중 응답을 공유하고 한 번만 실행한다', async (t) => {
+  const f = fixture();
+  let release!: () => void;
+  let enter!: () => void;
+  const gate = new Promise<void>((done) => {
+    release = done;
+  });
+  const entered = new Promise<void>((done) => {
+    enter = done;
+  });
+  let calls = 0;
+  const feature = f.backend.feature;
+  f.backend.feature = async (...args) => {
+    calls++;
+    enter();
+    await gate;
+    return feature(...args);
+  };
+  const service = await startLocalApi(f.backend, 'orbit://app');
+  t.after(() => service.close());
+  const path = `/v1/projects/${f.id}/session/feature`;
+  const body = {
+    action: 'start',
+    featureId: randomUUID(),
+    expectedRevision: 1,
+    input: '',
+    expectedOutputId: f.output.id,
+    expectedRunId: null,
+  };
+  const requestHeaders = headers(service);
+  const first = http(service, path, { body: JSON.stringify(body), headers: requestHeaders });
+  const repeated = http(service, path, { body: JSON.stringify(body), headers: requestHeaders });
+  try {
+    await entered;
+    const conflict = await http(service, path, {
+      body: JSON.stringify({ ...body, input: '같은 번호 다른 내용' }),
+      headers: requestHeaders,
+    });
+    assert.equal(conflict.status, 409);
+    assert.equal((conflict.data.error as { code: string }).code, 'REQUEST_CONFLICT');
+    assert.equal(calls, 1);
+  } finally {
+    release();
+  }
+  const [initial, duplicate] = await Promise.all([first, repeated]);
+  assert.equal(initial.status, 200);
+  assert.deepEqual(duplicate.data, initial.data);
+  assert.equal(calls, 1);
+  assert.equal(f.submissions, 1);
+  const replay = await http(service, path, { body: JSON.stringify(body), headers: requestHeaders });
+  assert.deepEqual(replay.data, initial.data);
+  assert.equal(calls, 1);
+});
+
+test('인증 REST: 같은 프로젝트의 이전 runId 중단은 새 기능 준비를 취소하지 않는다', async (t) => {
+  await mkdir('.runtime/stale-stop-tests', { recursive: true });
+  const root = await mkdtemp(resolve('.runtime/stale-stop-tests/case-'));
+  const feature: StoredFeature = {
+    id: randomUUID(),
+    parentId: null,
+    kind: 'leaf',
+    title: '준비 중인 기능',
+    description: '',
+    criteria: '준비 뒤 새 실행을 시작한다.',
+    included: true,
+    revision: 1,
+    order: 0,
+    relatedPaths: [],
+  };
+  let release!: () => void;
+  let enter!: () => void;
+  const gate = new Promise<void>((done) => {
+    release = done;
+  });
+  const entered = new Promise<void>((done) => {
+    enter = done;
+  });
+  let prepared = 0;
+  const manager = new SessionManager({
+    loadFeature: () => feature,
+    checkFeaturePaths: async () => {
+      enter();
+      await gate;
+    },
+    // Finish each accepted turn before spawning any process; only HTTP is real here.
+    prepare: async () => {
+      prepared++;
+      throw new Error('SYNTHETIC_NO_PROCESS');
+    },
+  });
+  const id = manager.registerProject(root);
+  assert.ok(id);
+  const service = await startLocalApi(manager, 'orbit://app');
+  t.after(async () => {
+    release();
+    await manager.shutdown();
+    await service.close();
+  });
+  const settled = async () => {
+    const deadline = Date.now() + 3000;
+    while (manager.busy && Date.now() < deadline) await delay(5);
+    assert.equal(manager.busy, false);
+  };
+  assert.equal(
+    (
+      await http(service, `/v1/projects/${id}/session/submit`, {
+        body: JSON.stringify({
+          prompt: '이전 실행 A',
+          expectedOutputId: null,
+          expectedRunId: null,
+        }),
+      })
+    ).status,
+    200,
+  );
+  await settled();
+  const previous = manager.read(id, 0);
+  assert.equal(previous.state, 'error');
+  assert.equal(previous.cleanupConfirmed, true);
+  assert.ok(previous.id);
+  assert.equal(prepared, 1);
+
+  const pending = http(service, `/v1/projects/${id}/session/feature`, {
+    body: JSON.stringify({
+      action: 'start',
+      featureId: feature.id,
+      expectedRevision: 1,
+      input: '',
+      expectedOutputId: previous.outputId,
+      expectedRunId: previous.id,
+    }),
+  });
+  await entered;
+  assert.equal(manager.busy, true);
+  assert.equal(manager.read(id, 0).id, previous.id);
+  let stop: Awaited<ReturnType<typeof http>>;
+  try {
+    stop = await http(service, `/v1/projects/${id}/session/stop`, {
+      body: JSON.stringify({ expectedRunId: previous.id }),
+    });
+  } finally {
+    release();
+  }
+  const started = await pending;
+  await settled();
+  t.diagnostic(
+    `previous=${previous.state}, oldStopHTTP=${stop.status}, nextStartHTTP=${started.status}, driverCalls=${prepared}`,
+  );
+  assert.equal(stop.status, 409, '이전 실행의 중단 요청을 새 준비에 적용하면 안 된다.');
+  assert.equal(started.status, 200, '오래된 중단 요청 뒤에도 새 준비는 계속되어야 한다.');
+  assert.notEqual(manager.read(id, 0).id, previous.id);
+  assert.equal(prepared, 2);
 });

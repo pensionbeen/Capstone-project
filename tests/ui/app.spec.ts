@@ -173,6 +173,7 @@ test('renderer는 Node 권한 없이 제한된 폴더 선택 API만 가진다', 
       'restoreProjects',
       'sendAIPrompt',
       'sendRequirementsPrompt',
+      'sendFeaturePrompt',
       'readAISession',
       'resizeAISession',
       'stopAISession',
@@ -215,7 +216,11 @@ test('renderer는 Node 권한 없이 제한된 폴더 선택 API만 가진다', 
 test('검증 근거를 요구하고 조건 변경 뒤 과거 결과를 무효화한다', async () => {
   await toDashboard();
   await page.getByRole('button', { name: '작업 내용 열기' }).click();
-  await expect(page.getByRole('button', { name: 'AI 실행 준비 중' })).toBeDisabled();
+  const featureDialog = page.getByRole('dialog', { name: '기능 작업' });
+  await expect(featureDialog.getByRole('button', { name: '기능 AI 대화 열기' })).toBeDisabled();
+  await expect(
+    featureDialog.getByText('실제 프로젝트 폴더를 선택해야 기능 대화를 실행할 수 있어요.'),
+  ).toBeVisible();
   await page.getByRole('button', { name: '직접 확인한 결과 기록' }).click();
   await expect(page.getByRole('button', { name: '검증 결과 저장' })).toBeDisabled();
   for (const checkbox of await page.getByRole('dialog').getByRole('checkbox').all())

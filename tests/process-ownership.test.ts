@@ -136,4 +136,90 @@ for (const [name, create] of trackers) {
     assert.equal(audit.owned.size, 2);
     assert.deepEqual(audit.alive(), []);
   });
+
+  test(`${name}: 외부 계보를 확인한 같은 콘솔은 부모가 먼저 종료되어도 불확실로 바뀌지 않는다`, () => {
+    for (const consoleName of ['conhost.exe', 'OpenConsole.exe']) {
+      const audit = observed();
+      const parent = row(6000, external.pid, 2000, 'helper.exe');
+      const console = row(7777, parent.pid, 3000, consoleName);
+      audit.observe([supervisor, external, parent, console]);
+      assert.equal(audit.uncertain, false);
+      audit.observe([supervisor, console]);
+      assert.equal(audit.uncertain, false, '이미 확인한 PID와 생성 시각의 외부 증거를 보존한다');
+      assert.equal(audit.uncertainProcesses.size, 0);
+      assert.equal(audit.owned.size, 2, '외부 콘솔을 종료할 소유 프로세스로 취급하지 않는다');
+      assert.deepEqual(audit.alive(), []);
+    }
+  });
+
+  test(`${name}: 확인한 외부 콘솔의 PID를 새 콘솔이 재사용해도 이전 증거를 적용하지 않는다`, () => {
+    const audit = observed();
+    const parent = row(6000, external.pid, 2000, 'helper.exe');
+    const console = row(7777, parent.pid, 3000, 'conhost.exe');
+    audit.observe([supervisor, external, parent, console]);
+    assert.equal(audit.uncertain, false);
+    const reusedConsole = row(console.pid, 8888, 4000, 'conhost.exe');
+    audit.observe([supervisor, reusedConsole]);
+    assert.equal(audit.uncertain, true);
+    assert.ok(audit.uncertainProcesses.has(`${reusedConsole.pid}:${reusedConsole.created}`));
+    assert.equal(audit.owned.size, 2);
+  });
+
+  test(`${name}: 외부 부모만 먼저 관측한 증거로 처음 보는 고아 콘솔을 제외하지 않는다`, () => {
+    const audit = observed();
+    const parent = row(6000, external.pid, 2000, 'helper.exe');
+    const console = row(7777, parent.pid, 3000, 'conhost.exe');
+    audit.observe([supervisor, external, parent]);
+    audit.observe([supervisor, console]);
+    assert.equal(audit.uncertain, true);
+    assert.equal(
+      audit.uncertainProcesses.get(`${console.pid}:${console.created}`)?.observedParent,
+      null,
+    );
+    assert.equal(audit.owned.size, 2);
+  });
+
+  test(`${name}: 같은 고아 콘솔의 외부 계보를 나중에 알아도 이전 불확실 판정은 보존한다`, () => {
+    const audit = observed();
+    const parent = row(6000, external.pid, 2000, 'helper.exe');
+    const console = row(7777, parent.pid, 3000, 'conhost.exe');
+    const key = `${console.pid}:${console.created}`;
+    audit.observe([supervisor, console]);
+    assert.equal(audit.uncertain, true);
+    const evidence = audit.uncertainProcesses.get(key);
+    assert.ok(evidence);
+    assert.equal(evidence.observedParent, null);
+    audit.observe([supervisor, external, parent, console]);
+    audit.observe([supervisor, console]);
+    assert.equal(audit.uncertain, true);
+    assert.deepEqual(audit.uncertainProcesses.get(key), evidence);
+    assert.equal(audit.owned.size, 2);
+  });
+
+  test(`${name}: 실제 소유 계보가 관측되면 기존 외부 콘솔 증거보다 우선하여 계속 추적한다`, () => {
+    const audit = observed();
+    const parent = row(6000, external.pid, 2000, 'helper.exe');
+    const console = row(7777, parent.pid, 3000, 'conhost.exe');
+    const key = `${console.pid}:${console.created}`;
+    audit.observe([supervisor, external, parent, console]);
+    assert.equal(audit.owned.has(key), false);
+    audit.observe([supervisor, owner, { ...console, parent: owner.pid }]);
+    assert.ok(audit.owned.has(key));
+    audit.observe([supervisor, external, parent, console]);
+    assert.ok(audit.owned.has(key), '한 번 관측한 소유 프로세스는 외부 증거로 숨기지 않는다');
+    assert.equal(audit.alive().length, 1);
+    assert.equal(audit.uncertain, false);
+  });
+
+  test(`${name}: 확인한 외부 콘솔을 근거로 계보가 끊긴 새 자식 콘솔까지 제외하지 않는다`, () => {
+    const audit = observed();
+    const parent = row(6000, external.pid, 2000, 'helper.exe');
+    const console = row(7777, parent.pid, 3000, 'conhost.exe');
+    const child = row(8888, console.pid, 4000, 'conhost.exe');
+    audit.observe([supervisor, external, parent, console]);
+    audit.observe([supervisor, console, child]);
+    assert.equal(audit.uncertain, true);
+    assert.deepEqual([...audit.uncertainProcesses.keys()], [`${child.pid}:${child.created}`]);
+    assert.equal(audit.owned.size, 2);
+  });
 }

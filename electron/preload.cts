@@ -29,6 +29,25 @@ const desktop: DesktopBridge = {
       expectedOutputId,
       expectedRunId,
     ),
+  sendFeaturePrompt: (
+    projectId,
+    action,
+    featureId,
+    expectedRevision,
+    input,
+    expectedOutputId,
+    expectedRunId,
+  ) =>
+    ipcRenderer.invoke(
+      'ai:feature',
+      projectId,
+      action,
+      featureId,
+      expectedRevision,
+      input,
+      expectedOutputId,
+      expectedRunId,
+    ),
   readAISession: (projectId, after, outputId) =>
     ipcRenderer.invoke('ai:read', projectId, after, outputId),
   resizeAISession: (projectId: string, cols: number, rows: number) =>

@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import type { AISnapshot } from '../../shared/ai';
 import { compareVerifications, latestVerification } from '../../shared/verification';
 import { ProtectionEditor } from '../components/ProtectionEditor';
 import { Badge, Button, EmptyState, Icon, Modal, Notice, PageHeading } from '../components/ui';
@@ -19,6 +20,9 @@ export function OverviewPage({
   onOpen,
   onVerification,
   onAdd,
+  aiStatus,
+  aiObservationFailed,
+  onOpenConversation,
 }: {
   project: Project;
   features: Feature[];
@@ -26,11 +30,17 @@ export function OverviewPage({
   onOpen: (feature: Feature) => void;
   onVerification: () => void;
   onAdd: () => void;
+  aiStatus: AISnapshot;
+  aiObservationFailed: boolean;
+  onOpenConversation: () => void;
 }) {
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
   const summary = progress(features, records);
   const next = features.find((feature) => featureState(feature, records) !== 'passed');
+  const sessionFeature = features.find(
+    (feature) => feature.id === aiStatus.featureContext?.featureId,
+  );
   const visible = features.filter(
     (feature) =>
       (filter === 'all' ||
@@ -74,6 +84,59 @@ export function OverviewPage({
           />
         </div>
       </div>
+      <section className="current-ai-session section-block" aria-label="현재 AI 실행">
+        <div className="section-heading">
+          <h2>현재 AI 대화</h2>
+          <Badge>
+            {aiObservationFailed
+              ? '현재 상태 확인 필요'
+              : {
+                  idle: '세션 없음',
+                  starting: '준비 중',
+                  running: '실행 중',
+                  stopping: '정리 중',
+                  exited: '실행 종료',
+                  interrupted: '중단됨',
+                  error: '확인 필요',
+                }[aiStatus.state]}
+          </Badge>
+        </div>
+        {aiStatus.purpose === 'feature' && aiStatus.featureContext ? (
+          <>
+            <h3>{aiStatus.featureContext.title}</h3>
+            <p>실행 조건 버전 {aiStatus.featureContext.revision}</p>
+            <Badge>
+              기능 검증:{' '}
+              {sessionFeature
+                ? stateLabels[featureState(sessionFeature, records)]
+                : '현재 목록에서 제외되었거나 없음'}
+            </Badge>
+          </>
+        ) : (
+          <p>
+            {aiStatus.id
+              ? aiStatus.purpose === 'requirements'
+                ? '요구분석 대화'
+                : '일반 대화'
+              : '기능을 선택해 분석·구현 계획을 대화해 보세요.'}
+          </p>
+        )}
+        <p role="status">
+          {aiObservationFailed
+            ? `현재 실행 상태를 확인하지 못했어요. 마지막 관측: ${aiStatus.message}`
+            : aiStatus.message}
+        </p>
+        <Button variant="secondary" onClick={onOpenConversation}>
+          현재 대화 열기
+        </Button>
+        <p className="field-hint">
+          실행 상태는 관측한 프로세스 상태예요. 출력이 잠시 없어도 생각 중이나 기능 완료로 판단하지
+          않아요. 기능 완료는 별도 검증 결과에 반영해요.
+        </p>
+        <p className="field-hint">
+          현재 세션 하나만 이 앱 실행 동안 유지해요. 앱을 다시 시작하면 대화 출력은 복원되지 않아요.
+        </p>
+      </section>
       {next ? (
         <div className="next-action">
           <div className="next-action-copy">

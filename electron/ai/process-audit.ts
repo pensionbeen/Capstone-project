@@ -100,6 +100,7 @@ export function processSnapshot(): Promise<ProcessIdentity[]> {
 
 export class ProcessAudit {
   readonly owned = new Map<string, ProcessIdentity>();
+  private readonly externalConsoles = new Set<string>();
   readonly baseline: Set<string>;
   readonly baselineTree: Set<string>;
   readonly supervisorKey: string;
@@ -163,7 +164,15 @@ export class ProcessAudit {
     } while (changed);
     for (const row of rows) {
       if (this.baseline.has(identity(row)) || this.owned.has(identity(row))) continue;
-      if (consoleHost(row) && this.hasExternalAncestor(row, rows)) continue;
+      // Retain proven external identities after their parents exit. Owned
+      // propagation above still takes priority, and uncertainty stays sticky.
+      if (
+        consoleHost(row) &&
+        (this.externalConsoles.has(identity(row)) || this.hasExternalAncestor(row, rows))
+      ) {
+        this.externalConsoles.add(identity(row));
+        continue;
+      }
       if (this.hasReusedExternalParent(row, rows)) continue;
       if (
         consoleHost(row) ||
