@@ -73,3 +73,23 @@ controller 자체 실행 실패는 `launcher-error.json`에 별도로 남기도�
 - [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects): 자체 프로세스 묶음의 자식 포함과 핸들 종료 정리.
 - [UpdateProcThreadAttribute](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute): 명시한 핸들만 상속하는 목록.
 - [CreateDesktopW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-createdesktopw): 새 객체의 권한·핸들 수명. 기존 데스크톱이나 레지스트리 값을 변경하는 문서 절차는 사용하지 않는다.
+
+## 2026-10-12 추가 조사와 재실행 조건
+
+추가 조사는 기존 보고서와 Windows 이벤트를 읽는 방식으로만 수행했다. 최초 세 번의 제한 자식은 `CreateProcessAsUser` 생성 성공 후 `0xC0000142`로 종료됐고, 마지막 실행은 controller가 시작되기 전에 Smart App Control에 차단됐다. 최초 세 번의 정확한 실행 경로와 PID에 일치하는 차단 이벤트는 발견하지 못했다. 따라서 두 실패를 같은 원인으로 확정하지 않는다. 이벤트 부재만으로 정책 개입이 없었다고 증명할 수도 없다. 상세 시각, 조회 범위와 증거는 [RESULTS.md](RESULTS.md)의 추가 조사에 있다.
+
+현재 helper 실행 차단은 유지한다. 실패 원인을 해결해 달라는 요청을 보안 기능 해제, 신뢰 인증서 추가, 예외 등록, 설치 또는 계정 변경의 허가로 해석하지 않는다. 파일명·경로·컴파일 옵션을 바꾼 재시도나 같은 코드를 Script/Add-Type 등으로 메모리에서 실행하는 방식도 사용하지 않는다.
+
+다음 경로는 아직 실행하거나 성공을 확인한 해결책이 아니라 선택 가능한 조사·해결 계획이다.
+
+| 경로 | 필요한 조건과 범위 | 판정 한계 |
+| --- | --- | --- |
+| 현재 PC에서 읽기 전용 사전 확인 | 기존 코드 서명 인증서의 메타데이터, 서명 도구, 기존 Windows VM 실행기와 시험 환경의 유무를 확인한다. 개인키 내용을 읽거나 내보내지 않는다. 총괄의 다른 CLI 검증과 순서를 나눈다. | 실행 가능성을 확인하는 단계이며 제한된 프로세스의 파일 보호 성공을 뜻하지 않는다. |
+| 공개적으로 신뢰받는 인증서로 helper 서명 | 검토한 코드에 대해 신뢰받는 CA 또는 Artifact Signing의 공개 신뢰 서명을 사용하고 현재 Smart App Control 정책을 유지한다. 기존 서명 수단의 이용 권한과 비용·외부 서비스·도구 설치 필요성을 먼저 확인한다. 기존 실패 산출물은 보존한다. | Microsoft가 안내하는 정책 호환 경로지만 실제 서명·실행은 미검증이다. 서명이 최초 세 번의 DLL 초기화 실패까지 해결한다는 보장은 없다. |
+| 별도 Windows 시험 환경에서 원인 분리 | 이미 사용 가능한 VM 또는 시험 PC가 있는지 먼저 확인한다. 새 설치·기능 활성화·재부팅 등이 필요하면 구체 범위를 정한 뒤 사용자 결정으로 진행한다. 시험 환경에도 가짜 자료만 사용한다. | 현재 PC에서 확인된 Windows 11 Home은 Windows Sandbox 공식 지원 대상이 아니다. 다른 환경의 성공은 현재 PC 보호 성공을 대체하지 못한다. |
+
+공식 문서는 [Smart App Control 서명 안내](https://learn.microsoft.com/en-us/windows/apps/develop/smart-app-control/code-signing-for-smart-app-control), [Artifact Signing 가입 조건](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart), [Windows Sandbox 지원 환경](https://learn.microsoft.com/en-us/windows/security/application-security/application-isolation/windows-sandbox/)을 참고한다. 서비스 자격은 사용자에게 해당하는지 별도로 확인해야 한다. 예를 들어 2026-10-12 확인한 Artifact Signing 문서는 공개 신뢰 서명에서 한국의 조직을 지원하지만 개인 개발자는 미국·캐나다로 제한한다. 사용자의 거주지·국적·계정의 조직 형태는 확인하거나 추정하지 않았다.
+
+정책에 맞는 실행 경로가 확보된 뒤에도 일반 사용자 작업 성공, 제한된 부모·자식의 보호 파일 read/write/delete에 대한 실제 OS 거부, 허용 파일 정상 작업, 보호 파일 해시 보존과 ACL·자체 프로세스·desktop 정리를 다시 관측해야 한다. owner 권한, 부모의 자식 삭제 권한, 링크, 미리 열린 핸들 등의 결과를 각각 남기며 실제 Codex/PTY와 서비스·프록시 경유는 별도 검증 대상이다. **X-002는 해결 완료가 아니며 T-014 착수 차단을 유지한다. 별도 시험 환경 후보 조사는 X-003 두 기기 파일 전송의 재개를 뜻하지 않는다.**
+
+후속 환경 확인에서 사용자는 별도 VM·코드 서명 수단을 마련한 기억이 없다고 답했다. 총괄의 제한된 읽기 전용 조회에서도 PATH·일반 설치 경로, Windows Kits의 x64 `signtool`, 현재 사용자 개인 인증서 저장소의 코드 서명 EKU 메타데이터, 실행 중 VM 제품 프로세스에서 해당 항목이 발견되지 않았다. 이는 PC 전체·다른 인증서 저장소·꺼진 VM까지 존재하지 않는다는 증명이 아니다. 따라서 즉시 이용 가능한 서명·시험 환경은 아직 확인되지 않았으며 설치·가입·결제·실험 재실행은 진행하지 않았다. 조회 증거는 총괄 작업 폴더의 `.runtime/x002-environment-inventory.json`에 있다.
