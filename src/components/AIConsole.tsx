@@ -16,19 +16,50 @@ import {
   emptyAISnapshot,
 } from '../../shared/ai';
 import {
+  FEATURE_INPUT_LIMIT,
+  type FeatureSessionAction,
+  featureContextMatches,
+  validFeatureSessionInput,
+} from '../../shared/feature-session';
+import {
   REQUIREMENTS_ANSWER_LIMIT,
   REQUIREMENTS_GOAL_LIMIT,
   type RequirementsAction,
   type RequirementsDraft,
   validRequirementsInput,
 } from '../../shared/requirements';
-import type { Project } from '../model';
+import type { Feature, Project } from '../model';
 import { Badge, Button, Modal, Notice } from './ui';
 
-export function AIConsole({ project, onClose }: { project: Project; onClose: () => void }) {
+export interface FeatureSessionSelection {
+  featureId: string;
+  feature: Feature | undefined;
+  enabled: boolean;
+  blockedReason?: string;
+  canSubmit?: () => boolean;
+}
+
+export function AIConsole({
+  project,
+  featureSession,
+  onBusyChange,
+  onNewChat,
+  onClose,
+}: {
+  project: Project;
+  featureSession?: FeatureSessionSelection;
+  onBusyChange?: (busy: boolean) => void;
+  onNewChat?: () => void;
+  onClose: () => void;
+}) {
   return (
     <Modal title="Codex와 대화" onClose={onClose} drawer>
-      <AIConversation project={project} />
+      <AIConversation
+        project={project}
+        featureSession={featureSession}
+        onBusyChange={onBusyChange}
+        onNewChat={onNewChat}
+      />
     </Modal>
   );
 }
@@ -36,10 +67,14 @@ export function AIConsole({ project, onClose }: { project: Project; onClose: () 
 export function AIConversation({
   project,
   requirements,
+  featureSession,
   onBusyChange,
+  onNewChat,
 }: {
   project: Project;
+  featureSession?: FeatureSessionSelection;
   onBusyChange?: (busy: boolean) => void;
+  onNewChat?: () => void;
   requirements?: {
     draft: RequirementsDraft;
     onChange: Dispatch<SetStateAction<RequirementsDraft>>;
@@ -75,16 +110,25 @@ export function AIConversation({
     return () => onBusyChange?.(false);
   }, [busy, onBusyChange]);
   const projectId = project.desktopId;
-  const purpose = requirements ? 'requirements' : 'chat';
+  const purpose = requirements ? 'requirements' : featureSession ? 'feature' : 'chat';
   const onRequirementsChange = requirements?.onChange;
   const matching = snapshot.purpose === purpose;
+  const selectedFeature = featureSession?.feature;
+  const sameFeature = snapshot.featureContext?.featureId === featureSession?.featureId;
+  const currentContext = Boolean(
+    selectedFeature &&
+      snapshot.featureContext &&
+      featureContextMatches(selectedFeature, snapshot.featureContext),
+  );
+  const canAnswerFeature = matching && sameFeature && currentContext && snapshot.conversationReady;
   const canSend =
     !busy &&
     connected &&
     availability?.status === 'ready' &&
     Boolean(projectId) &&
     snapshot.cleanupConfirmed &&
-    (!requirements || requirements.enabled);
+    (!requirements || requirements.enabled) &&
+    (!featureSession || featureSession.enabled);
 
   async function check() {
     if (!window.desktop) return;
@@ -299,6 +343,88 @@ export function AIConversation({
     }
   }
 
+  async function sendFeature(action: FeatureSessionAction) {
+    const bridge = window.desktop;
+    const text = action === 'start' ? '' : input;
+    if (
+      !bridge ||
+      !projectId ||
+      !selectedFeature ||
+      !featureSession ||
+      commandPending.current ||
+      !canSend ||
+      !validFeatureSessionInput(action, text) ||
+      (featureSession.canSubmit && !featureSession.canSubmit()) ||
+      (action === 'answer' && !canAnswerFeature)
+    )
+      return;
+    commandPending.current = true;
+    const generation = lifecycle.current;
+    submissionVersion.current++;
+    setSending(true);
+    setMessage('');
+    try {
+      const result = await bridge.sendFeaturePrompt(
+        projectId,
+        action,
+        selectedFeature.id,
+        selectedFeature.revision,
+        text,
+        snapshot.outputId,
+        snapshot.id,
+      );
+      if (generation !== lifecycle.current) return;
+      if (result.ok) {
+        submissionVersion.current++;
+        if (action === 'answer') setChatInput((current) => (current === text ? '' : current));
+        setSnapshot((old) => ({
+          ...old,
+          id: result.runId ?? old.id,
+          outputId: result.outputId ?? old.outputId,
+          purpose: 'feature',
+          featureContext: action === 'start' ? null : old.featureContext,
+          state: 'starting',
+          cleanupConfirmed: false,
+          message: 'Codex 실행을 준비하고 있어요.',
+        }));
+      } else setMessage(result.message ?? '기능 대화를 시작하지 못했어요.');
+    } catch {
+      if (generation === lifecycle.current)
+        setMessage('요청 결과를 확인하지 못했어요. 현재 실행 상태를 확인한 뒤 다시 시도해 주세요.');
+    } finally {
+      commandPending.current = false;
+      if (generation === lifecycle.current) setSending(false);
+    }
+  }
+
+  async function resetConversation() {
+    if (!projectId || commandPending.current || busy || !connected || !snapshot.cleanupConfirmed)
+      return;
+    commandPending.current = true;
+    const generation = lifecycle.current;
+    submissionVersion.current++;
+    setSending(true);
+    try {
+      const result = await window.desktop?.resetAISession(
+        projectId,
+        snapshot.outputId,
+        snapshot.id,
+      );
+      if (generation !== lifecycle.current) return;
+      if (result?.ok) {
+        submissionVersion.current++;
+        setSnapshot(emptyAISnapshot);
+        if (featureSession) onNewChat?.();
+      } else setMessage(result?.message ?? '새 대화를 시작하지 못했어요.');
+    } catch {
+      if (generation === lifecycle.current)
+        setMessage('초기화 결과를 확인하지 못했어요. 현재 대화 상태를 확인해 주세요.');
+    } finally {
+      commandPending.current = false;
+      if (generation === lifecycle.current) setSending(false);
+    }
+  }
+
   function submitWithKeyboard(
     event: KeyboardEvent<HTMLTextAreaElement>,
     action?: RequirementsAction,
@@ -310,7 +436,8 @@ export function AIConversation({
     )
       return;
     event.preventDefault();
-    void send(action);
+    if (featureSession) void sendFeature('answer');
+    else void send(action);
   }
 
   const goalAction = matching && snapshot.conversationReady ? 'revise-goal' : 'start';
@@ -330,7 +457,9 @@ export function AIConversation({
           <p>
             {requirements
               ? '목표를 보내면 Codex가 필요한 내용을 질문해요.'
-              : '화면을 닫아도 현재 실행은 이어져요.'}
+              : featureSession
+                ? '선택한 기능의 조건과 경로로 분석·구현 계획을 대화해요.'
+                : '화면을 닫아도 현재 실행은 이어져요.'}
           </p>
         </div>
         <Badge>읽기 전용 연결</Badge>
@@ -338,6 +467,60 @@ export function AIConversation({
       <Notice>
         파일 수정 없이 대화하는 첫 연결이에요. 보호 설정안의 경로 읽기 차단은 아직 적용되지 않아요.
       </Notice>
+      {featureSession && (
+        <section className="feature-session-context" aria-label="선택한 대화 기능">
+          <h3>{selectedFeature?.title ?? '현재 목록에서 찾을 수 없는 기능'}</h3>
+          {selectedFeature && (
+            <>
+              <p>{selectedFeature.description}</p>
+              <Badge>조건 버전 {selectedFeature.revision}</Badge>
+              <h4>완료 조건</h4>
+              <p className="preserve-lines">{selectedFeature.criteria}</p>
+              <h4>관련 경로</h4>
+              <p>
+                {selectedFeature.relatedPaths?.join(' · ') ||
+                  '지정한 경로 없음 · 프로젝트 폴더 기준'}
+              </p>
+            </>
+          )}
+          {!featureSession.enabled && (
+            <p className="form-message">{featureSession.blockedReason}</p>
+          )}
+          <Button
+            type="button"
+            onClick={() => void sendFeature('start')}
+            disabled={!canSend || !selectedFeature}
+            icon="play"
+          >
+            {snapshot.id ? '이 기능으로 새 세션 시작' : '이 기능으로 대화 시작'}
+          </Button>
+          {snapshot.id && (
+            <p className="field-hint">새 세션을 시작하면 현재 대화 출력이 초기화돼요.</p>
+          )}
+        </section>
+      )}
+      {snapshot.purpose === 'feature' && snapshot.featureContext && (
+        <section className="feature-session-context" aria-label="실제 실행에 연결된 기능">
+          <strong>현재 대화: {snapshot.featureContext.title}</strong>
+          <p>실행에 고정된 조건 버전 {snapshot.featureContext.revision}</p>
+          <p>
+            {snapshot.featureContext.relatedPaths.join(' · ') ||
+              '관련 경로 없음 · 프로젝트 폴더 기준'}
+          </p>
+          {featureSession && !sameFeature && (
+            <Notice>
+              다른 기능의 대화가 열려 있어요. 실행과 출력은 위 기능에 연결되어 있어요. 종료 후 새
+              세션을 시작해 주세요.
+            </Notice>
+          )}
+          {featureSession && sameFeature && !currentContext && (
+            <Notice>
+              기능 내용·조건·관련 경로 또는 포함 여부가 바뀌었어요. 기존 출력은 이전 조건의
+              대화예요. 답변을 보내려면 현재 조건으로 새 세션을 시작해 주세요.
+            </Notice>
+          )}
+        </section>
+      )}
       {requirements && (
         <p className="field-hint">
           목표와 답변은 로그인한 Codex 서비스로 전송돼요. 계정 사용 한도가 적용되며 남은
@@ -412,7 +595,7 @@ export function AIConversation({
             )}
           {!matching && snapshot.id && (
             <p className="field-hint">
-              새 요구분석을 시작하면 이 앱의 현재 일반 대화 출력이 초기화돼요.
+              새 요구분석을 시작하면 이 앱의 현재 대화 출력이 초기화돼요.
             </p>
           )}
         </form>
@@ -420,8 +603,10 @@ export function AIConversation({
       {!matching && snapshot.id && (
         <Notice>
           {requirements
-            ? '일반 대화가 열려 있어요. 실행을 마친 뒤 목표를 보내면 새 요구분석으로 시작해요.'
-            : '요구분석 대화가 열려 있어요. 요구분석 화면에서 이어가거나 아래에서 새 일반 대화를 시작하세요.'}
+            ? '다른 목적의 대화가 열려 있어요. 실행을 마친 뒤 목표를 보내면 새 요구분석으로 시작해요.'
+            : featureSession
+              ? '다른 목적의 대화가 열려 있어요. 실행을 마친 뒤 위 버튼으로 새 기능 세션을 시작하세요.'
+              : '다른 목적의 대화가 열려 있어요. 원래 화면에서 이어가거나 아래에서 새 일반 대화를 시작하세요.'}
         </Notice>
       )}
       <div className="ai-run-status" role="status">
@@ -461,24 +646,37 @@ export function AIConversation({
         ref={outputRef}
         className="ai-terminal"
         hidden={!matching}
-        aria-label={requirements ? '요구분석 AI 출력' : 'Codex 실행 출력'}
+        aria-label={
+          requirements
+            ? '요구분석 AI 출력'
+            : featureSession
+              ? '기능 대화 AI 출력'
+              : 'Codex 실행 출력'
+        }
       />
       <form
         className="ai-composer"
         onSubmit={(event) => {
           event.preventDefault();
-          void send(requirements ? 'answer' : undefined);
+          if (featureSession) void sendFeature('answer');
+          else void send(requirements ? 'answer' : undefined);
         }}
       >
         <label htmlFor={inputId} className="field-label">
-          {requirements ? '질문에 대한 답변·정정 내용' : 'Codex에게 보낼 메시지'}
+          {requirements
+            ? '질문에 대한 답변·정정 내용'
+            : featureSession
+              ? '기능 대화에 보낼 답변'
+              : 'Codex에게 보낼 메시지'}
         </label>
         <textarea
           id={inputId}
           aria-describedby={answerHintId}
           value={input}
-          maxLength={requirements ? REQUIREMENTS_ANSWER_LIMIT : 8000}
-          disabled={sending || (!requirements && !matching)}
+          maxLength={
+            requirements ? REQUIREMENTS_ANSWER_LIMIT : featureSession ? FEATURE_INPUT_LIMIT : 8000
+          }
+          disabled={sending || (!requirements && !featureSession && !matching)}
           rows={3}
           placeholder={
             requirements
@@ -489,12 +687,17 @@ export function AIConversation({
           onKeyDown={(event) => submitWithKeyboard(event, requirements ? 'answer' : undefined)}
         />
         <p id={answerHintId} className="field-hint">
-          {requirements ? answerHint : '메시지를 적고 전송해 주세요.'} Enter로 줄바꿈 ·
-          Ctrl/⌘+Enter로 전송
+          {requirements
+            ? answerHint
+            : featureSession
+              ? '현재 조건으로 시작한 기능 대화에 답변해 주세요. 전송은 실행과 정리 종료 후 가능해요.'
+              : '메시지를 적고 전송해 주세요.'}{' '}
+          Enter로 줄바꿈 · Ctrl/⌘+Enter로 전송
         </p>
         <div className="ai-composer-actions">
           <span className="field-hint">
-            {input.length.toLocaleString()} / {requirements ? '6,000' : '8,000'} · Enter로 줄바꿈
+            {input.length.toLocaleString()} /{' '}
+            {requirements ? '6,000' : featureSession ? '2,000' : '8,000'} · Enter로 줄바꿈
           </span>
           {busy ? (
             <Button
@@ -525,15 +728,24 @@ export function AIConversation({
             <Button
               type="submit"
               disabled={
-                (requirements ? !validRequirementsInput('answer', input) : !input.trim()) ||
+                (requirements
+                  ? !validRequirementsInput('answer', input)
+                  : featureSession
+                    ? !validFeatureSessionInput('answer', input)
+                    : !input.trim()) ||
                 !canSend ||
                 !matching ||
+                (Boolean(featureSession) && !canAnswerFeature) ||
                 (Boolean(requirements) &&
                   (!snapshot.conversationReady || !snapshot.requirementsGoalConfirmed))
               }
               icon="arrow"
             >
-              {requirements ? '답변·정정 보내기' : '메시지 보내기'}
+              {requirements
+                ? '답변·정정 보내기'
+                : featureSession
+                  ? '기능 답변 보내기'
+                  : '메시지 보내기'}
             </Button>
           )}
         </div>
@@ -549,7 +761,7 @@ export function AIConversation({
           요청 모델: gpt-6.1-sol · 추론 수준: high. 실행 종료가 프로젝트 기능 완료를 뜻하지는
           않아요.
         </p>
-        {requirements && (
+        {(requirements || featureSession) && (
           <p>
             앱을 닫으면 이 화면의 목표·입력·대화 출력은 복원되지 않아요. 정정은 새 메시지로 보내며
             이전 전송 내용을 지우지 않아요. 사용 한도나 로그인 오류는 출력과 연결 준비 확인을 보고
@@ -561,38 +773,20 @@ export function AIConversation({
           있어요. 중단은 로컬 프로세스 정리까지 확인하며 원격 연산 중단은 확인하지 못해요.
         </p>
         {snapshot.truncated && <p>이전 출력 일부는 보관 한도를 넘어 생략했어요.</p>}
-        <Button
-          type="button"
-          variant="ghost"
-          disabled={busy || !connected || !snapshot.cleanupConfirmed || !projectId}
-          onClick={async () => {
-            if (!projectId) return;
-            if (commandPending.current) return;
-            commandPending.current = true;
-            const generation = lifecycle.current;
-            submissionVersion.current++;
-            setSending(true);
-            try {
-              const result = await window.desktop?.resetAISession(
-                projectId,
-                snapshot.outputId,
-                snapshot.id,
-              );
-              if (generation !== lifecycle.current) return;
-              if (result && !result.ok)
-                setMessage(result.message ?? '새 대화를 시작하지 못했어요.');
-              else submissionVersion.current++;
-            } catch {
-              if (generation === lifecycle.current)
-                setMessage('초기화 결과를 확인하지 못했어요. 현재 대화 상태를 확인해 주세요.');
-            } finally {
-              commandPending.current = false;
-              if (generation === lifecycle.current) setSending(false);
-            }
-          }}
-        >
-          {requirements ? '요구분석 대화 초기화' : matching ? '새 대화 시작' : '새 일반 대화 시작'}
-        </Button>
+        {(!featureSession || onNewChat) && (
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={busy || !connected || !snapshot.cleanupConfirmed || !projectId}
+            onClick={() => void resetConversation()}
+          >
+            {requirements
+              ? '요구분석 대화 초기화'
+              : matching && !featureSession
+                ? '새 대화 시작'
+                : '새 일반 대화 시작'}
+          </Button>
+        )}
       </details>
     </div>
   );

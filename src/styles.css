@@ -2747,3 +2747,23 @@ progress::-webkit-progress-value {
   background: #f0fdf4;
   border: 1px solid #a3d9b4;
 }
+
+.feature-session-context {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+.feature-session-context h3 {
+  font-size: 16px;
+  margin-bottom: 8px;
+}
+.feature-session-context h4 {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 16px 0 6px;
+}
+.feature-session-context p {
+  font-size: 13px;
+  line-height: 1.7;
+}

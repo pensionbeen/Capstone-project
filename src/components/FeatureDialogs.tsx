@@ -193,18 +193,22 @@ export function FeatureEditor({
 
 export function WorkDetails({
   feature,
+  onAI,
+  blockedReason,
   onEdit,
   onVerify,
   onClose,
 }: {
   feature: Feature;
+  onAI: () => void;
+  blockedReason?: string;
   onEdit: () => void;
   onVerify: () => void;
   onClose: () => void;
 }) {
   return (
     <Modal title="기능 작업" onClose={onClose} drawer>
-      <Badge>AI 연결 전</Badge>
+      <Badge>조건 버전 {feature.revision}</Badge>
       <h3 className="detail-title">{feature.title}</h3>
       <p className="detail-description">{feature.description}</p>
       <div className="section-block">
@@ -230,7 +234,7 @@ export function WorkDetails({
           <Icon name="down" size={16} />
         </summary>
         <div className="prompt-preview">
-          <p>{feature.title} 기능을 구현해 주세요.</p>
+          <p>{feature.title} 기능의 분석과 구현 계획을 정리해 주세요.</p>
           <p>{feature.description}</p>
           <p>완료 조건</p>
           <ul>
@@ -238,14 +242,19 @@ export function WorkDetails({
               <li key={criterion}>{criterion}</li>
             ))}
           </ul>
+          <p>
+            관련 경로:{' '}
+            {feature.relatedPaths?.join(' · ') || '지정한 경로 없음 · 프로젝트 폴더 기준'}
+          </p>
         </div>
       </details>
       <Notice>
-        기능별 AI 실행은 아직 연결되지 않았어요. 지금은 작업 내용과 검증 흐름을 확인할 수 있어요.
+        {blockedReason ||
+          'Codex는 파일 수정 없이 분석·구현 계획을 대화해요. 실행 종료와 기능 검증 결과는 따로 확인해요.'}
       </Notice>
       <div className="drawer-actions">
-        <Button disabled icon="play">
-          AI 실행 준비 중
+        <Button disabled={Boolean(blockedReason)} onClick={onAI} icon="play">
+          기능 AI 대화 열기
         </Button>
         <Button variant="secondary" onClick={onVerify}>
           직접 확인한 결과 기록
