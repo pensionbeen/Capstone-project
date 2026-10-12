@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { runtime, report, capture } from './lib.mjs';
 import { snapshot } from './snapshot.mjs';
 import { validatePacket, promptFor } from './review-core.mjs';
-import { processSnapshot, SessionProcesses, validateSnapshot } from './managed-processes.mjs';
+import { processSnapshot, SessionProcesses, validateSnapshot, snapshotQueryEvidence } from './managed-processes.mjs';
 import { agyModel, agyReviewedVersion, verifyProjectPolicy, canaryEvidence, isCanaryTool, reviewInit, hasAgyAuthOverride, parseAgyEvent } from './agy-project-core.mjs';
 
 // Existing dedicated test project only. Setup is performed through the CLI's
@@ -187,6 +187,7 @@ try {
 }
 await report(canary ? 'agy-project-canary' : 'agy-project-review', { ...canaryProof,
   status: reason ? 'BLOCKED_OR_FAILED' : canary ? 'FOUR_CANARY_DENIALS_OBSERVED' : 'REVIEW_OBSERVED_PROJECT_DENY_ENFORCED',
-  reason: reason || null, observations, response: result, lockRetained: retainLock,
+  reason: reason || null, observations: { ...observations, snapshotQueries: snapshotQueryEvidence() },
+  response: result, lockRetained: retainLock,
   rawTranscriptSavedByRunner: false, enforcementScope: 'PROJECT_PERMISSION_ENGINE_NOT_OS_CONTAINMENT' });
 process.exitCode = reason ? 2 : 0;

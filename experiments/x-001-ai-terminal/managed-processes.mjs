@@ -2,6 +2,53 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 
 const observedQueryProcesses = new Set();
+const queryHistoryLimit = 128;
+const queryResults = new Set(['SUCCESS', 'CIM_SNAPSHOT_FAILED', 'CIM_SNAPSHOT_INVALID']);
+
+// Diagnostic data only. Neither exclusions nor ownership checks read this history.
+export class SnapshotQueryHistory {
+  #total = 0;
+  #queries = [];
+
+  begin() {
+    const sequence = ++this.#total;
+    this.#queries.push({ sequence, queryPid: null, query: null,
+      startedAt: new Date().toISOString(), completedAt: null, result: 'PENDING' });
+    if (this.#queries.length > queryHistoryLimit) this.#queries.shift();
+    return sequence;
+  }
+
+  complete(sequence, pid, supervisorPid, rows, result) {
+    const entry = this.#queries.find(query => query.sequence === sequence);
+    if (!entry || entry.result !== 'PENDING') return;
+    entry.completedAt = new Date().toISOString();
+    entry.queryPid = Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+    entry.result = queryResults.has(result) ? result : 'DIAGNOSTIC_INVALID';
+    if (entry.result !== 'SUCCESS' || entry.queryPid === null) return;
+    try {
+      validateSnapshot(rows);
+      const query = rows.find(row => row.pid === pid && row.parent === supervisorPid);
+      if (query && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3,7}Z$/u.test(query.created) &&
+          query.name.toLowerCase() === 'powershell.exe') {
+        const { parent, created, name } = query;
+        entry.query = { pid, parent, created, name };
+      }
+    } catch { /* A missing diagnostic identity never changes the snapshot result. */ }
+  }
+
+  report() {
+    return { available: true, limit: queryHistoryLimit, total: this.#total,
+      truncated: this.#total > this.#queries.length,
+      queries: this.#queries.map(entry => ({ ...entry, query: entry.query ? { ...entry.query } : null })) };
+  }
+}
+
+const queryHistory = new SnapshotQueryHistory();
+
+export function snapshotQueryEvidence() {
+  try { return queryHistory.report(); }
+  catch { return { available: false, limit: queryHistoryLimit, total: null, truncated: true, queries: [] }; }
+}
 
 // No command lines, paths, credentials, or process-name termination are collected.
 export function processSnapshot({ timeoutMs = 2000 } = {}) {
@@ -11,16 +58,34 @@ export function processSnapshot({ timeoutMs = 2000 } = {}) {
     '@(Get-CimInstance Win32_Process -Filter "ProcessId > 4" | ForEach-Object { ' +
     '[pscustomobject]@{pid=[int]$_.ProcessId; parent=[int]$_.ParentProcessId; ' +
     'created=$_.CreationDate.ToUniversalTime().ToString("o"); name=$_.Name} }) | ConvertTo-Json -Compress';
+  let sequence;
+  try { sequence = queryHistory.begin(); } catch { /* Diagnostics cannot block a query. */ }
   return new Promise((resolve, reject) => {
-    const query = execFile(path.join(process.env.SystemRoot || 'C:\\Windows',
-    'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-  ['-NoLogo', '-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-  { timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024, windowsHide: true, encoding: 'utf8' },
-  (error, stdout, stderr) => {
-    if (error || stderr.trim()) { reject(new Error('CIM_SNAPSHOT_FAILED')); return; }
-    try { resolve(excludeSnapshotObserver(JSON.parse(stdout), query.pid, process.pid, observedQueryProcesses)); }
-    catch { reject(new Error('CIM_SNAPSHOT_INVALID')); }
-    });
+    let query;
+    const record = (result, rows) => {
+      try { queryHistory.complete(sequence, query?.pid, process.pid, rows, result); }
+      catch { /* Diagnostics cannot change exclusion, ownership, or cleanup decisions. */ }
+    };
+    try {
+      query = execFile(path.join(process.env.SystemRoot || 'C:\\Windows',
+        'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+      ['-NoLogo', '-NoProfile', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      { timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024, windowsHide: true, encoding: 'utf8' },
+      (error, stdout, stderr) => {
+        if (error || stderr.trim()) {
+          record('CIM_SNAPSHOT_FAILED'); reject(new Error('CIM_SNAPSHOT_FAILED')); return;
+        }
+        let rows, filtered;
+        try {
+          rows = JSON.parse(stdout);
+          filtered = excludeSnapshotObserver(rows, query.pid, process.pid, observedQueryProcesses);
+        } catch {
+          record('CIM_SNAPSHOT_INVALID'); reject(new Error('CIM_SNAPSHOT_INVALID')); return;
+        }
+        record('SUCCESS', rows);
+        resolve(filtered);
+      });
+    } catch (error) { record('CIM_SNAPSHOT_FAILED'); reject(error); }
   });
 }
 
