@@ -3,6 +3,7 @@ import websocket from '@fastify/websocket';
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import type { WebSocket } from 'ws';
 import type { AIReply } from '../../shared/ai.js';
+import { FEATURE_INPUT_LIMIT, type FeatureSessionAction } from '../../shared/feature-session.js';
 import type { ApiResult, SessionEvent, SessionRead } from '../../shared/local-api.js';
 import type { RequirementsAction } from '../../shared/requirements.js';
 import type { ProjectCatalog } from '../../shared/storage.js';
@@ -46,6 +47,7 @@ export type SessionBackend = Pick<
   | 'availabilityStatus'
   | 'submit'
   | 'requirements'
+  | 'feature'
   | 'generate'
   | 'stop'
   | 'reset'
@@ -212,7 +214,11 @@ export async function startLocalApi(
     },
   );
 
-  async function mutate(request: FastifyRequest, reply: FastifyReply, action: () => AIReply) {
+  async function mutate(
+    request: FastifyRequest,
+    reply: FastifyReply,
+    action: () => AIReply | Promise<AIReply>,
+  ) {
     const now = Date.now();
     for (const [id, entry] of cache) if (entry.expires < now) cache.delete(id);
     const fingerprint = createHash('sha256')
@@ -259,6 +265,14 @@ export async function startLocalApi(
       expectedRunId: nullableId,
     }),
     generate: objectSchema({ expectedOutputId: nullableId, expectedRunId: nullableId }),
+    feature: objectSchema({
+      action: { type: 'string', enum: ['start', 'answer'] },
+      featureId: uuidSchema,
+      expectedRevision: { type: 'integer', minimum: 1, maximum: 2147483647 },
+      input: { type: 'string', maxLength: FEATURE_INPUT_LIMIT },
+      expectedOutputId: nullableId,
+      expectedRunId: nullableId,
+    }),
     requirements: objectSchema({
       action: { type: 'string', enum: ['start', 'answer', 'revise-goal'] },
       input: { type: 'string', minLength: 1, maxLength: 6000 },
@@ -272,12 +286,22 @@ export async function startLocalApi(
       rows: { type: 'integer', minimum: 5, maximum: 120 },
     }),
   };
-  for (const action of ['submit', 'requirements', 'generate', 'stop', 'reset', 'resize'] as const) {
+  for (const action of [
+    'submit',
+    'requirements',
+    'feature',
+    'generate',
+    'stop',
+    'reset',
+    'resize',
+  ] as const) {
     app.post<{
       Params: { id: string };
       Body: {
         prompt: string;
         action: RequirementsAction;
+        featureId: string;
+        expectedRevision: number;
         input: string;
         cols: number;
         rows: number;
@@ -299,6 +323,7 @@ export async function startLocalApi(
             ((action === 'reset' ||
               action === 'submit' ||
               action === 'requirements' ||
+              action === 'feature' ||
               action === 'generate') &&
               (state.outputId !== body.expectedOutputId || state.id !== body.expectedRunId))
           )
@@ -309,6 +334,16 @@ export async function startLocalApi(
             );
           if (action === 'submit') return manager.submit(id, body.prompt);
           if (action === 'requirements') return manager.requirements(id, body.action, body.input);
+          if (action === 'feature')
+            return manager.feature(
+              id,
+              body.action as FeatureSessionAction,
+              body.featureId,
+              body.expectedRevision,
+              body.input,
+              body.expectedOutputId,
+              body.expectedRunId,
+            );
           if (action === 'generate') return manager.generate(id);
           if (action === 'stop') return manager.stop(id);
           if (action === 'reset') return manager.reset(id);

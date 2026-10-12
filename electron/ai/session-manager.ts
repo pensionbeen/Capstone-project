@@ -6,6 +6,13 @@ import { basename, join, parse } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { type AIReply, type AISnapshot, activeAIStates, emptyAISnapshot } from '../../shared/ai.js';
 import { generationPrompt, parseGeneratedPlan } from '../../shared/feature-generation.js';
+import type { StoredFeature } from '../../shared/feature-plan.js';
+import {
+  type FeatureSessionAction,
+  type FeatureSessionContext,
+  featureContextMatches,
+  validFeatureSessionInput,
+} from '../../shared/feature-session.js';
 import type { LocalProject } from '../../shared/local-api.js';
 import {
   type RequirementsAction,
@@ -15,6 +22,11 @@ import {
 import { inspectDirectory } from '../policy.js';
 import { codexArguments, inspectCodex, installedCodex } from './codex.js';
 import { OutputBuffer, promptIsValid, rejected, sizeIsValid, UUID } from './contracts.js';
+import {
+  checkFeaturePaths,
+  featureSessionPrompt,
+  storedFeatureContext,
+} from './feature-context.js';
 import { ProcessAudit, type ProcessIdentity, processSnapshot } from './process-audit.js';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -38,6 +50,9 @@ interface Driver {
   inspectHeader: boolean;
 }
 interface Dependencies {
+  // Synchronous trusted DB read lets us recheck immediately before committing a turn.
+  loadFeature?: (projectId: string, featureId: string) => StoredFeature | undefined;
+  checkFeaturePaths?: typeof checkFeaturePaths;
   prepare?: (
     cwd: string,
     prompt: string,
@@ -54,6 +69,10 @@ const messages: Record<string, string> = {
   SESSION_TIMEOUT: '실행 시간 한도에 도달해 중단했어요. 요청을 작게 나누어 주세요.',
   LOGIN_NOT_READY: 'Codex 설치·로그인 상태를 다시 확인해 주세요.',
   PROJECT_UNAVAILABLE: '선택한 프로젝트 폴더를 열 수 없어요. 폴더를 다시 선택해 주세요.',
+  FEATURE_CHANGED:
+    '기능의 내용·완료 조건·관련 경로가 바뀌었어요. 최신 기능으로 새 대화를 시작해 주세요.',
+  FEATURE_PATH_UNAVAILABLE:
+    '기능의 관련 경로 또는 프로젝트 폴더를 열 수 없어요. 없는 경로·링크·프로젝트 밖 경로는 사용할 수 없어요.',
 };
 
 export class SessionManager {
@@ -65,6 +84,8 @@ export class SessionManager {
   private conversation?: string;
   private host?: ChildProcess;
   private lifetime?: Promise<void>;
+  private pendingFeature?: { projectId: string; cancelled: boolean };
+  private featurePreparation?: Promise<AIReply>;
   private stopRequested = false;
   private shutdownRequested = false;
   private cols = 100;
@@ -87,7 +108,7 @@ export class SessionManager {
     this.dependencies = dependencies;
   }
   get busy() {
-    return activeAIStates.includes(this.state.state);
+    return Boolean(this.pendingFeature) || activeAIStates.includes(this.state.state);
   }
 
   listProjects() {
@@ -106,6 +127,7 @@ export class SessionManager {
     return !this.busy && !this.shutdownRequested && this.state.cleanupConfirmed;
   }
   replaceProjects(projects: LocalProject[], resetSession = false) {
+    if (!this.canChangeProjects) return false;
     this.projects = new Map(projects.map((p) => [p.id, p.path]));
     this.projectNames = new Map(projects.map((p) => [p.id, p.name]));
     if (resetSession) {
@@ -114,6 +136,7 @@ export class SessionManager {
       this.output = new OutputBuffer();
       this.conversation = undefined;
     }
+    return true;
   }
 
   registerProject(path: string) {
@@ -145,7 +168,9 @@ export class SessionManager {
           if (result.cleanupUnconfirmed) {
             this.probeCleanupUnconfirmed = true;
             this.state.cleanupConfirmed = false;
-            if (this.busy && this.projectId) this.stop(this.projectId);
+            if (this.pendingFeature) this.pendingFeature.cancelled = true;
+            if (activeAIStates.includes(this.state.state) && this.projectId)
+              this.stop(this.projectId);
             else {
               this.state.state = 'error';
               this.state.message = result.message;
@@ -163,6 +188,12 @@ export class SessionManager {
     if (projectId !== this.projectId) return { ...emptyAISnapshot, chunks: [] };
     return {
       ...this.state,
+      featureContext: this.state.featureContext
+        ? {
+            ...this.state.featureContext,
+            relatedPaths: [...this.state.featureContext.relatedPaths],
+          }
+        : null,
       outputId: this.output.id,
       chunks: this.output.read(after),
       retainedBytes: this.output.bytes,
@@ -173,9 +204,132 @@ export class SessionManager {
     };
   }
   submit(projectId: string, prompt: string): AIReply {
-    if (this.projectId === projectId && this.state.purpose === 'requirements')
-      return rejected('요구분석 화면에서 답변을 보내거나 새 일반 대화를 시작해 주세요.');
+    if (this.projectId === projectId && this.state.purpose !== 'chat')
+      return rejected('현재 대화에 연결된 화면에서 답변하거나 새 일반 대화를 시작해 주세요.');
     return this.startTurn(projectId, prompt, 'chat', null, false);
+  }
+  feature(
+    projectId: string,
+    action: FeatureSessionAction,
+    featureId: string,
+    expectedRevision: number,
+    input: string,
+    expectedOutputId: string | null,
+    expectedRunId: string | null,
+  ): Promise<AIReply> {
+    if (
+      typeof projectId !== 'string' ||
+      !UUID.test(projectId) ||
+      typeof featureId !== 'string' ||
+      !UUID.test(featureId) ||
+      !Number.isSafeInteger(expectedRevision) ||
+      expectedRevision < 1 ||
+      expectedRevision > 2147483647 ||
+      !validFeatureSessionInput(action, input) ||
+      !(
+        expectedOutputId === null ||
+        (typeof expectedOutputId === 'string' && UUID.test(expectedOutputId))
+      ) ||
+      !(expectedRunId === null || (typeof expectedRunId === 'string' && UUID.test(expectedRunId)))
+    )
+      return Promise.resolve(
+        rejected('기능과 버전을 확인하고 요청은 2,000자 이내로 입력해 주세요.'),
+      );
+    if (this.busy || this.shutdownRequested || !this.state.cleanupConfirmed)
+      return Promise.resolve(rejected('현재 실행과 정리가 끝난 뒤 기능 대화를 시작해 주세요.'));
+    if (!this.sessionMatches(projectId, expectedOutputId, expectedRunId))
+      return Promise.resolve(
+        rejected('대화 상태가 바뀌었어요. 최신 상태를 확인한 뒤 다시 시도해 주세요.'),
+      );
+    const cwd = this.projects.get(projectId);
+    if (!cwd || !this.dependencies.loadFeature)
+      return Promise.resolve(rejected('저장된 프로젝트와 기능을 다시 불러와 주세요.'));
+    const pending = { projectId, cancelled: false };
+    this.pendingFeature = pending;
+    const preparation = this.prepareFeature(
+      pending,
+      cwd,
+      action,
+      featureId,
+      expectedRevision,
+      input,
+      expectedOutputId,
+      expectedRunId,
+    ).finally(() => {
+      if (this.pendingFeature === pending) this.pendingFeature = undefined;
+      if (this.featurePreparation === preparation) this.featurePreparation = undefined;
+    });
+    this.featurePreparation = preparation;
+    return preparation;
+  }
+  private sessionMatches(projectId: string, outputId: string | null, runId: string | null) {
+    const current = this.read(projectId, Number.MAX_SAFE_INTEGER);
+    return current.outputId === outputId && current.id === runId;
+  }
+  private featureStillCurrent(projectId: string, cwd: string, context: FeatureSessionContext) {
+    const feature = this.dependencies.loadFeature?.(projectId, context.featureId);
+    if (
+      this.projects.get(projectId) !== cwd ||
+      !feature ||
+      !featureContextMatches(feature, context)
+    )
+      throw new Error('FEATURE_CHANGED');
+  }
+  private async prepareFeature(
+    pending: { projectId: string; cancelled: boolean },
+    cwd: string,
+    action: FeatureSessionAction,
+    featureId: string,
+    expectedRevision: number,
+    input: string,
+    expectedOutputId: string | null,
+    expectedRunId: string | null,
+  ): Promise<AIReply> {
+    const projectId = pending.projectId;
+    try {
+      const feature = this.dependencies.loadFeature?.(projectId, featureId);
+      const context = storedFeatureContext(feature, featureId, expectedRevision);
+      if (
+        action === 'answer' &&
+        (this.projectId !== projectId ||
+          this.state.purpose !== 'feature' ||
+          !this.state.featureContext ||
+          !this.conversation ||
+          !feature ||
+          !featureContextMatches(feature, this.state.featureContext))
+      )
+        return rejected(
+          '이 기능과 같은 조건으로 이어갈 대화가 없어요. 새 기능 대화를 시작해 주세요.',
+        );
+      const prompt = featureSessionPrompt(action, context, input);
+      if (!promptIsValid(prompt))
+        return rejected(
+          '기능 내용·관련 경로·요청을 합친 메시지가 8,000자 한도를 넘거나 허용되지 않는 문자를 포함해요. 내용을 줄이거나 수정해 주세요. 일부 내용을 생략해 보내지 않았어요.',
+        );
+      await (this.dependencies.checkFeaturePaths ?? checkFeaturePaths)(cwd, context.relatedPaths);
+      if (pending.cancelled || this.shutdownRequested || this.pendingFeature !== pending)
+        return rejected('기능 대화 준비가 취소됐어요. 실행하지 않았어요.');
+      this.featureStillCurrent(projectId, cwd, context);
+      if (!this.sessionMatches(projectId, expectedOutputId, expectedRunId))
+        return rejected('대화 상태가 바뀌었어요. 최신 상태를 확인한 뒤 다시 시도해 주세요.');
+      // No await between releasing the reservation and acquiring startTurn's running state.
+      this.pendingFeature = undefined;
+      return this.startTurn(
+        projectId,
+        prompt,
+        'feature',
+        null,
+        action === 'start',
+        false,
+        false,
+        context,
+      );
+    } catch (error) {
+      return rejected(
+        messages[error instanceof Error ? error.message : ''] ??
+          '저장된 기능을 확인하지 못했어요. 최신 기능을 다시 불러와 주세요.',
+      );
+    }
   }
   requirements(projectId: string, action: RequirementsAction, input: string): AIReply {
     if (!validRequirementsInput(action, input))
@@ -230,6 +384,7 @@ export class SessionManager {
     fresh: boolean,
     requirementsGoalConfirmed = false,
     generate = false,
+    featureContext: FeatureSessionContext | null = null,
   ): AIReply {
     const cwd = this.projects.get(projectId);
     if (!cwd) return rejected('앱에서 실제 프로젝트 폴더를 선택해 주세요.');
@@ -249,6 +404,7 @@ export class SessionManager {
     this.state = {
       ...emptyAISnapshot,
       purpose,
+      featureContext,
       requirementsGoal,
       requirementsGoalConfirmed,
       generationState: generate ? 'running' : 'idle',
@@ -258,11 +414,15 @@ export class SessionManager {
       message: 'Codex 실행을 준비하고 있어요.',
       cleanupConfirmed: false,
     };
-    this.lifetime = this.run(cwd, prompt, generate);
+    this.lifetime = this.run(cwd, prompt, generate, featureContext);
     return { ok: true, runId: this.state.id ?? undefined, outputId: this.output.id };
   }
   stop(projectId: string): AIReply {
-    if (projectId !== this.projectId || !this.busy)
+    if (this.pendingFeature?.projectId === projectId) {
+      this.pendingFeature.cancelled = true;
+      return { ok: true, message: '기능 대화 준비를 취소했어요.' };
+    }
+    if (projectId !== this.projectId || !activeAIStates.includes(this.state.state))
       return rejected('현재 실행 중인 대화가 없어요.');
     this.stopRequested = true;
     this.state.state = 'stopping';
@@ -303,6 +463,8 @@ export class SessionManager {
     clearTimeout(this.resizeTimer);
     this.availabilityAbort?.abort();
     if (this.projectId && this.busy) this.stop(this.projectId);
+    if (this.pendingFeature) this.pendingFeature.cancelled = true;
+    await this.featurePreparation;
     await this.lifetime;
     await this.availability;
     return this.state.cleanupConfirmed;
@@ -311,7 +473,13 @@ export class SessionManager {
     if (this.host?.connected) this.host.send(message, () => {});
   }
 
-  private async run(cwd: string, prompt: string, generate = false) {
+  private async run(
+    cwd: string,
+    prompt: string,
+    generate = false,
+    featureContext: FeatureSessionContext | null = null,
+  ) {
+    const projectId = this.projectId;
     const snapshot = this.dependencies.snapshot ?? processSnapshot;
     let audit: ProcessAudit | undefined;
     let host: ChildProcess | undefined;
@@ -353,6 +521,14 @@ export class SessionManager {
       if (this.stopRequested) return;
       const baseline = await snapshot();
       if (this.stopRequested) return;
+      if (featureContext && projectId) {
+        await (this.dependencies.checkFeaturePaths ?? checkFeaturePaths)(
+          cwd,
+          featureContext.relatedPaths,
+        );
+        if (this.stopRequested) return;
+        this.featureStillCurrent(projectId, cwd, featureContext);
+      }
       host = spawn(
         this.dependencies.hostExecutable ?? process.execPath,
         [fileURLToPath(new URL('./pty-host.js', import.meta.url))],
@@ -433,6 +609,14 @@ export class SessionManager {
         audit.observe(await snapshot());
         if (audit.uncertain) fail('PROCESS_OWNERSHIP_UNCONFIRMED');
         if (ready && !started && !this.stopRequested && !failure) {
+          if (featureContext && projectId) {
+            await (this.dependencies.checkFeaturePaths ?? checkFeaturePaths)(
+              cwd,
+              featureContext.relatedPaths,
+            );
+            if (this.stopRequested) continue;
+            this.featureStillCurrent(projectId, cwd, featureContext);
+          }
           started = true;
           this.send({ type: 'start', ...driver, cwd, cols: this.cols, rows: this.rows });
         }
@@ -563,7 +747,9 @@ export class SessionManager {
           this.state.requirementsGoalConfirmed = true;
         this.state.message =
           result?.code === 0
-            ? '실행이 끝났어요. 결과를 확인하고 다음 메시지를 보내세요.'
+            ? this.state.purpose === 'feature'
+              ? '기능 대화 실행이 끝났어요. 기능 검증 완료를 뜻하지 않아요. 결과와 완료 조건을 확인해 주세요.'
+              : '실행이 끝났어요. 결과를 확인하고 다음 메시지를 보내세요.'
             : 'Codex가 오류로 종료됐어요. 아래 출력을 확인해 주세요. 로컬 프로세스는 정리했어요.';
       }
     }

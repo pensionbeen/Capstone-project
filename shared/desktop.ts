@@ -1,5 +1,6 @@
 import type { AIAvailability, AIReply, AISnapshot } from './ai.js';
 import type { ProjectFeaturePlan } from './feature-plan.js';
+import type { FeatureSessionAction } from './feature-session.js';
 import type { ConnectionFailure } from './local-api.js';
 import type { RequirementsAction } from './requirements.js';
 import type {
@@ -39,6 +40,15 @@ export interface DesktopBridge {
   sendRequirementsPrompt: (
     projectId: string,
     action: RequirementsAction,
+    input: string,
+    expectedOutputId: string | null,
+    expectedRunId: string | null,
+  ) => Promise<AIReply>;
+  sendFeaturePrompt: (
+    projectId: string,
+    action: FeatureSessionAction,
+    featureId: string,
+    expectedRevision: number,
     input: string,
     expectedOutputId: string | null,
     expectedRunId: string | null,
