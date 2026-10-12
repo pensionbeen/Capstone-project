@@ -207,6 +207,69 @@ test('실제 Codex: 기능의 읽기 전용 분석과 같은 대화 답변', asy
     `${Date.now()}-${randomUUID()}`,
   );
   await mkdir(evidenceDirectory, { recursive: true });
+  await page.evaluate(() => {
+    const events: unknown[] = [];
+    let omittedEvents = 0;
+    function identify(element: EventTarget | null) {
+      if (!(element instanceof Element)) return null;
+      return {
+        tag: element.tagName,
+        id: element.id,
+        role: element.getAttribute('role'),
+        ariaLabel: element.getAttribute('aria-label'),
+        className: element.getAttribute('class'),
+        dialogTitleId: element.closest('dialog')?.getAttribute('aria-labelledby') ?? null,
+      };
+    }
+    function current() {
+      return {
+        observedAt: new Date().toISOString(),
+        dialogCount: document.querySelectorAll('dialog').length,
+        openDialogCount: document.querySelectorAll('dialog[open]').length,
+        activeElement: identify(document.activeElement),
+        visibility: document.visibilityState,
+        documentHasFocus: document.hasFocus(),
+      };
+    }
+    function record(event: Event) {
+      events.push({
+        type: event.type,
+        isTrusted: event.isTrusted,
+        target: identify(event.target),
+        ...current(),
+      });
+      if (events.length > 200) {
+        events.shift();
+        omittedEvents++;
+      }
+    }
+    for (const type of ['close', 'cancel', 'focusin', 'visibilitychange'])
+      document.addEventListener(type, record, true);
+    document.addEventListener(
+      'keydown',
+      (event) => {
+        if (event.key === 'Escape') record(event);
+      },
+      true,
+    );
+    document.addEventListener(
+      'click',
+      (event) => {
+        if (event.target instanceof Element && event.target.closest('button[aria-label="닫기"]'))
+          record(event);
+      },
+      true,
+    );
+    window.addEventListener('focus', record);
+    window.addEventListener('blur', record);
+    // No input values or text keys are collected. Trusted events do not identify their actor.
+    Reflect.set(window, 'featureSessionWindowEvidence', () => ({
+      ...current(),
+      events: [...events],
+      omittedEvents,
+    }));
+  });
+  const conversationDialog = page.getByRole('dialog', { name: 'Codex와 대화' });
   const terminal = page.getByRole('region', { name: '기능 대화 AI 출력' });
   async function recordTurn(turn: 'first' | 'answer', observed: AISnapshot, afterSequence = 0) {
     const raw = await page.evaluate(
@@ -222,6 +285,9 @@ test('실제 Codex: 기능의 읽기 전용 분석과 같은 대화 답변', asy
       .filter((chunk) => chunk.sequence >= afterSequence)
       .map((chunk) => chunk.data)
       .join('');
+    const windowObservation = await page.evaluate(() =>
+      Reflect.get(window, 'featureSessionWindowEvidence')(),
+    );
     await writeFile(
       resolve(evidenceDirectory, `${turn}.json`),
       JSON.stringify(
@@ -244,20 +310,23 @@ test('실제 Codex: 기능의 읽기 전용 분석과 같은 대화 답변', asy
           rawOutput,
           outputText: stripVTControlCharacters(rawOutput),
           turnOutputText: stripVTControlCharacters(turnOutput),
+          windowObservation,
         },
         null,
         2,
       ),
       'utf8',
     );
-    await terminal.scrollIntoViewIfNeeded();
+    if (await terminal.isVisible()) await terminal.scrollIntoViewIfNeeded();
     await page.screenshot({ path: resolve(evidenceDirectory, `${turn}.png`) });
-    await test
-      .info()
-      .attach(`${turn}-response`, {
-        path: resolve(evidenceDirectory, `${turn}.json`),
-        contentType: 'application/json',
-      });
+    await test.info().attach(`${turn}-response`, {
+      path: resolve(evidenceDirectory, `${turn}.json`),
+      contentType: 'application/json',
+    });
+    await expect(
+      conversationDialog,
+      '턴 종료 후 대화창이 유지되어야 해요. 닫힘 사건과 전체 화면 증거를 확인하세요.',
+    ).toBeVisible();
     return raw.nextSequence;
   }
   await open('학생 알림 분석');
