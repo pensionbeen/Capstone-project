@@ -119,7 +119,9 @@ export class SessionProcesses {
       if (this.baseline.has(identity(row)) || this.owned.has(identity(row))) continue;
       // A new console host cannot be silently assigned to this session by timing alone.
       const consoleHost = ['conhost.exe', 'openconsole.exe'].includes(row.name.toLowerCase());
-      if (consoleHost && this.hasExternalAncestor(row, rows)) {
+      // Retain proven external identities after their parents exit. Owned
+      // propagation above still takes priority, and uncertainty stays sticky.
+      if (consoleHost && (this.externalConsoles.has(identity(row)) || this.hasExternalAncestor(row, rows))) {
         this.externalConsoles.add(identity(row));
         continue;
       }
