@@ -311,6 +311,10 @@ export function VerificationEditor({
           </div>
           <fieldset className="verification-checks">
             <legend>직접 확인한 완료 조건</legend>
+            <p className="field-hint">
+              AI가 완료했다고 말한 것만으로는 검증되지 않아요. 직접 동작을 확인한 조건만 선택해
+              주세요.
+            </p>
             {feature &&
               criteriaLines(feature.criteria).map((criterion) => (
                 <label key={criterion}>

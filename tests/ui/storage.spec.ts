@@ -72,15 +72,18 @@ test('실제 앱 재시작 뒤 이름·폴더·ID·선택 복원, AI 자동 실�
   await page.screenshot({ path: '.runtime/screens/13-project-restored.png', fullPage: true });
 });
 
-test('실제 프로젝트 기능 초안과 검증 결과가 저장되고 재시작 뒤 조회된다', async () => {
+test('실제 프로젝트 수동 기능과 검증 결과가 저장되고 재시작 뒤 조회된다', async () => {
   await select();
   await page.getByLabel('프로젝트 이름', { exact: true }).fill('기능 계획 검사');
   await page.getByRole('button', { name: '이 프로젝트로 시작' }).click();
-  await page.getByRole('button', { name: '예시로 요구분석 시작' }).click();
-  await page.getByRole('textbox', { name: '만들고 싶은 서비스' }).fill('할 일 앱');
-  await page.getByRole('button', { name: '요구분석 시작', exact: true }).click();
-  await page.getByRole('radio', { name: '나 혼자', exact: true }).check();
-  await page.getByRole('button', { name: '기능 초안 보기' }).click();
+  await page.getByRole('button', { name: 'AI로 요구분석 시작' }).click();
+  await page.getByRole('button', { name: '기능 직접 정리하기' }).click();
+  for (const title of ['할 일 추가', '할 일 수정', '할 일 목록', '할 일 검색']) {
+    await page.getByRole('button', { name: '기능 직접 추가' }).click();
+    await page.getByLabel('기능 이름', { exact: true }).fill(title);
+    await page.getByLabel('완료 조건', { exact: true }).fill(`${title} 동작을 확인한다.`);
+    await page.getByRole('button', { name: '기능 저장' }).click();
+  }
   await expect
     .poll(async () => {
       const list = await catalog();
@@ -244,7 +247,7 @@ test('복원 뒤 목록 조회가 실패해도 확정된 선택을 즉시 화면
 test('프로젝트 변경 확정 응답 대기 동안 취소와 Escape를 막는다', async () => {
   await select();
   await page.getByRole('button', { name: '이 프로젝트로 시작' }).click();
-  await page.getByRole('button', { name: '예시로 요구분석 시작' }).click();
+  await page.getByRole('button', { name: 'AI로 요구분석 시작' }).click();
   await page.getByRole('textbox', { name: '만들고 싶은 서비스' }).fill('유지해야 하는 요구');
   await page.getByRole('button', { name: '프로젝트 선택', exact: true }).click();
   const second = join(folder, '변경할 폴더');

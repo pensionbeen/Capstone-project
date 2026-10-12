@@ -123,6 +123,7 @@ export class SessionProcesses {
         this.externalConsoles.add(identity(row));
         continue;
       }
+      if (this.hasReusedExternalParent(row, rows)) continue;
       if (consoleHost ||
           [...this.owned.values()].some((parent) => parent.pid === row.parent)) {
         this.uncertain = true;
@@ -133,6 +134,17 @@ export class SessionProcesses {
     }
     this.current = current;
     return this;
+  }
+
+  hasReusedExternalParent(row, rows) {
+    const previous = [...this.owned.values()].filter((parent) => parent.pid === row.parent);
+    if (!previous.length) return false;
+    const parent = rows.find((candidate) => candidate.pid === row.parent);
+    // Exclude only proven PID reuse under an exact external baseline ancestor.
+    // Missing parents or contradictory creation times still block cleanup.
+    return Boolean(parent && !this.owned.has(identity(parent)) &&
+      previous.every((old) => Date.parse(parent.created) > Date.parse(old.created)) &&
+      this.hasExternalAncestor(row, rows));
   }
 
   // Concurrent IDE/git consoles are unrelated only when their live ancestry

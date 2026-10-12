@@ -106,6 +106,10 @@ export class ProcessAudit {
   ownerKey?: string;
   current = new Map<string, ProcessIdentity>();
   uncertain = false;
+  readonly uncertainProcesses = new Map<
+    string,
+    ProcessIdentity & { observedParent: ProcessIdentity | null }
+  >();
   constructor(
     rows: ProcessIdentity[],
     readonly ownerPid: number,
@@ -160,9 +164,32 @@ export class ProcessAudit {
     for (const row of rows) {
       if (this.baseline.has(identity(row)) || this.owned.has(identity(row))) continue;
       if (consoleHost(row) && this.hasExternalAncestor(row, rows)) continue;
-      if (consoleHost(row) || [...this.owned.values()].some((parent) => parent.pid === row.parent))
+      if (this.hasReusedExternalParent(row, rows)) continue;
+      if (
+        consoleHost(row) ||
+        [...this.owned.values()].some((parent) => parent.pid === row.parent)
+      ) {
         this.uncertain = true;
+        if (this.uncertainProcesses.size < 16)
+          this.uncertainProcesses.set(identity(row), {
+            ...row,
+            observedParent: rows.find((parent) => parent.pid === row.parent) ?? null,
+          });
+      }
     }
+  }
+  private hasReusedExternalParent(row: ProcessIdentity, rows: ProcessIdentity[]) {
+    const previous = [...this.owned.values()].filter((parent) => parent.pid === row.parent);
+    if (!previous.length) return false;
+    const parent = rows.find((candidate) => candidate.pid === row.parent);
+    // A PID match alone cannot link this child to an exited session process.
+    // Require a newer parent identity and a complete, time-consistent external chain.
+    return Boolean(
+      parent &&
+        !this.owned.has(identity(parent)) &&
+        previous.every((old) => Date.parse(parent.created) > Date.parse(old.created)) &&
+        this.hasExternalAncestor(row, rows),
+    );
   }
   private hasExternalAncestor(row: ProcessIdentity, rows: ProcessIdentity[]) {
     const visited = new Set<string>();

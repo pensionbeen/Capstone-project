@@ -19,6 +19,7 @@ import {
   type ProjectFeaturePlan,
   validateFeaturePlan,
 } from '../../shared/feature-plan.js';
+import { validFeaturePlanTransition } from '../../shared/feature-plan-transition.js';
 import type { ProjectBackup, ProjectCatalog, SavedProject } from '../../shared/storage.js';
 import { UUID } from '../ai/contracts.js';
 import {
@@ -271,6 +272,10 @@ export class ProjectStore {
       throw new StorageError('기능·선행 관계·완료 조건·검증 기록을 확인해 주세요.');
     return this.transaction(() => {
       const project = this.project(projectId);
+      if (!validFeaturePlanTransition(this.featurePlan(projectId), plan))
+        throw new StorageError(
+          '기능 버전이나 기존 검증 기록이 변경됐어요. 다시 불러온 뒤 검증해 주세요.',
+        );
       writeFeaturePlan(this.db, projectId, plan);
       this.db
         .prepare('UPDATE projects SET updated_at = ? WHERE id = ?')

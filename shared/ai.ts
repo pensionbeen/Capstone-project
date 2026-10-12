@@ -1,3 +1,5 @@
+import type { ProjectFeaturePlan } from './feature-plan.js';
+
 export type AIState =
   | 'idle'
   | 'starting'
@@ -17,6 +19,8 @@ export interface AIAvailability {
 export interface AIReply {
   ok: boolean;
   message?: string;
+  runId?: string;
+  outputId?: string;
 }
 
 export interface TerminalChunk {
@@ -27,6 +31,12 @@ export interface TerminalChunk {
 }
 
 export interface AISnapshot {
+  purpose: 'chat' | 'requirements';
+  requirementsGoal: string | null;
+  requirementsGoalConfirmed: boolean;
+  generationState: 'idle' | 'running' | 'ready' | 'error';
+  generatedPlan: ProjectFeaturePlan | null;
+  generationMessage: string;
   outputId: string | null;
   id: string | null;
   state: AIState;
@@ -44,6 +54,12 @@ export interface AISnapshot {
 export const activeAIStates: AIState[] = ['starting', 'running', 'stopping'];
 
 export const emptyAISnapshot: AISnapshot = {
+  purpose: 'chat',
+  requirementsGoal: null,
+  requirementsGoalConfirmed: false,
+  generationState: 'idle',
+  generatedPlan: null,
+  generationMessage: '',
   outputId: null,
   id: null,
   state: 'idle',

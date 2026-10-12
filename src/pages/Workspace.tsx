@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { compareVerifications, latestVerification } from '../../shared/verification';
 import { ProtectionEditor } from '../components/ProtectionEditor';
 import { Badge, Button, EmptyState, Icon, Modal, Notice, PageHeading } from '../components/ui';
 import type { Activity, Feature, Project, ProtectionDraft, Provider, Verification } from '../model';
@@ -61,7 +62,16 @@ export function OverviewPage({
         <div className="progress-stat">
           <span>완료 조건 기준 진행률</span>
           <strong>{summary.percent === null ? '정의 전' : `${summary.percent}%`}</strong>
-          <progress value={summary.percent ?? 0} max={100} aria-label="검증 완료율" />
+          <progress
+            value={summary.percent ?? 0}
+            max={100}
+            aria-label="검증 완료율"
+            aria-valuetext={
+              summary.percent === null
+                ? '정의 전'
+                : `${summary.total}개 중 ${summary.done}개 검증 완료, ${summary.percent}%`
+            }
+          />
         </div>
       </div>
       {next ? (
@@ -217,7 +227,11 @@ export function VerificationPage({
         title="완료는 확인한 만큼"
         description="기능이 의도대로 동작하는지 직접 확인하고, 결과와 근거를 함께 남겨 주세요."
       >
-        <Button onClick={onRecord} disabled={!features.length} icon="plus">
+        <Button
+          onClick={onRecord}
+          disabled={!features.some((feature) => feature.included && feature.kind === 'leaf')}
+          icon="plus"
+        >
           검증 결과 기록
         </Button>
       </PageHeading>
@@ -233,31 +247,58 @@ export function VerificationPage({
       </div>
       {records.length ? (
         <div className="verification-records">
-          {[...records].reverse().map((record) => {
-            const feature = features.find((item) => item.id === record.featureId);
-            return (
-              <article key={record.id} className="verification-record">
-                <div className="record-header">
-                  <h2>{record.featureTitle}</h2>
-                  <Badge
-                    accent={record.result === 'passed' && record.revision === feature?.revision}
-                  >
-                    {record.revision !== feature?.revision
-                      ? '이전 조건의 결과'
-                      : record.result === 'passed'
-                        ? '검증 통과'
-                        : '수정 필요'}
-                  </Badge>
-                  <time dateTime={record.createdAt}>{formatTime(record.createdAt)}</time>
-                </div>
-                <p>{record.observation}</p>
-                <div className="evidence-line">
-                  <Icon name="file" size={16} />
-                  <span>{record.evidence}</span>
-                </div>
-              </article>
-            );
-          })}
+          {[...records]
+            .sort(compareVerifications)
+            .reverse()
+            .map((record) => {
+              const feature = features.find((item) => item.id === record.featureId);
+              const current = feature && latestVerification(feature, records)?.id === record.id;
+              return (
+                <article key={record.id} className="verification-record">
+                  <div className="record-header">
+                    <h2>{record.featureTitle}</h2>
+                    <Badge accent={record.result === 'passed' && current && feature.included}>
+                      {record.result === 'passed' ? '검증 통과' : '수정 필요'}
+                    </Badge>
+                    {record.revision !== feature?.revision ? (
+                      <Badge>이전 조건의 결과</Badge>
+                    ) : (
+                      !current && <Badge>이전 검증 기록</Badge>
+                    )}
+                    {feature && !feature.included && <Badge>진행률에서 제외</Badge>}
+                    <time dateTime={record.createdAt}>
+                      {new Intl.DateTimeFormat('ko-KR', {
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                        hour12: false,
+                      }).format(new Date(record.createdAt))}
+                    </time>
+                  </div>
+                  <p className="field-hint">직접 확인 · 조건 버전 {record.revision}</p>
+                  <p>{record.observation}</p>
+                  <div className="evidence-line">
+                    <Icon name="file" size={16} />
+                    <span>{record.evidence}</span>
+                  </div>
+                  <details className="advanced">
+                    <summary>확인한 완료 조건 ({record.checkedCriteria.length}개)</summary>
+                    {record.checkedCriteria.length ? (
+                      <ul>
+                        {record.checkedCriteria.map((criterion) => (
+                          <li key={criterion}>{criterion}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>통과로 확인한 조건이 없어요.</p>
+                    )}
+                  </details>
+                </article>
+              );
+            })}
         </div>
       ) : (
         <EmptyState

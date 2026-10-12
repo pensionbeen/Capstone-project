@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { nextVerificationTime } from '../shared/verification.ts';
 import {
   canRecordVerification,
   criteriaLines,
@@ -51,6 +52,63 @@ test('나중 실패 결과가 과거 성공 결과를 대체한다', () => {
     featureState(feature, [record, { ...record, id: 'later', result: 'failed' }]),
     'failed',
   );
+});
+test('검증 배열이 뒤섞여도 실제 최신 실패를 완료로 집계하지 않는다', () => {
+  const failed: Verification = {
+    ...record,
+    id: 'later',
+    result: 'failed',
+    createdAt: '2026-10-04T04:00:01Z',
+  };
+  assert.equal(featureState(feature, [failed, record]), 'failed');
+});
+test('같은 시각의 상충하는 결과는 실패를 우선하며 배열 순서와 무관하다', () => {
+  const failed: Verification = { ...record, id: 'a', result: 'failed' };
+  for (const records of [
+    [record, failed],
+    [failed, record],
+  ])
+    assert.deepEqual(progress([feature], records), { done: 0, total: 1, percent: 0 });
+});
+test('시계가 뒤로 가거나 같은 밀리초에 기록해도 새 검증 시각은 뒤에 온다', () => {
+  const first = Date.parse(record.createdAt);
+  for (const now of [first - 10000, first, first + 1])
+    assert.equal(Date.parse(nextVerificationTime([record], now)), first + 1);
+  assert.equal(Date.parse(nextVerificationTime([record], first + 100)), first + 100);
+});
+test('검증 입력은 알 수 없는 조건·중복 조건·잘못된 결과·과대 근거를 거부한다', () => {
+  for (const bad of [
+    { ...record, checkedCriteria: [...record.checkedCriteria, '다른 조건'] },
+    { ...record, checkedCriteria: [...record.checkedCriteria, record.checkedCriteria[0]] },
+    { ...record, result: 'completed' as Verification['result'] },
+    { ...record, observation: 'a'.repeat(4001) },
+    { ...record, evidence: 'a\0b' },
+  ])
+    assert.equal(canRecordVerification(feature, bad), false);
+});
+test('근거 없는 통과 기록과 AI 완료 문장만으로 완료를 만들지 않는다', () => {
+  const claim = {
+    ...record,
+    observation: 'AI가 완료했다고 말했다.',
+    evidence: 'AI의 완료 문장',
+    checkedCriteria: [],
+  };
+  assert.equal(canRecordVerification(feature, claim), false);
+  assert.equal(progress([feature], [claim]).done, 0);
+  assert.equal(progress([feature], [{ ...record, evidence: '' }]).done, 0);
+});
+test('묶음과 제외 항목은 분모에서 빼고 추가·삭제·재포함을 다시 계산한다', () => {
+  const group = { ...feature, id: 'group', kind: 'group' as const, criteria: '' };
+  const second = { ...feature, id: 'second', parentId: group.id };
+  assert.deepEqual(progress([group], []), { done: 0, total: 0, percent: null });
+  assert.deepEqual(progress([group, feature, second], [record]), {
+    done: 1,
+    total: 2,
+    percent: 50,
+  });
+  assert.equal(progress([group, feature, { ...second, included: false }], [record]).percent, 100);
+  assert.equal(progress([group, second], [record]).percent, 0);
+  assert.equal(progress([group, feature, second], [record]).percent, 50);
 });
 test('근거와 결과 및 모든 조건 확인이 있어야 통과를 기록한다', () => {
   assert.equal(canRecordVerification(feature, record), true);

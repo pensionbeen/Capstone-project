@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { type ProjectFeaturePlan, validateFeaturePlan } from '../../shared/feature-plan.js';
+import { compareVerifications } from '../../shared/verification.js';
 import { StorageError } from './project-store.js';
 
 export const FEATURE_TABLES = {
@@ -130,7 +131,7 @@ export function readFeaturePlan(
     }
   };
   append(null);
-  return { ...plan, features: ordered };
+  return { ...plan, features: ordered, verifications: verifications.sort(compareVerifications) };
 }
 
 export function readAllFeaturePlans(db: DatabaseSync, projectIds: string[], withPaths = true) {

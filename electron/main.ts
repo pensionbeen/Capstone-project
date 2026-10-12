@@ -14,6 +14,7 @@ import {
 import { emptyAISnapshot } from '../shared/ai.js';
 import type { FolderResult } from '../shared/desktop.js';
 import type { ProjectFeaturePlan } from '../shared/feature-plan.js';
+import { validRequirementsInput } from '../shared/requirements.js';
 import type { ProjectCatalog, ProjectResult, StorageResult } from '../shared/storage.js';
 import { promptIsValid, rejected, sizeIsValid, UUID } from './ai/contracts.js';
 import { SessionManager } from './ai/session-manager.js';
@@ -417,6 +418,37 @@ void app.whenReady().then(async () => {
       return rejected('프로젝트와 메시지를 확인해 주세요.');
     return changingAI(() =>
       apiClient?.command(id, 'submit', { prompt, expectedOutputId, expectedRunId }),
+    );
+  });
+  ipcMain.handle('ai:generate', (event, ...args: unknown[]) => {
+    const [id, expectedOutputId, expectedRunId] = args;
+    if (
+      !trusted(event) ||
+      selecting ||
+      args.length !== 3 ||
+      !projectArgument(id) ||
+      !(expectedOutputId === null || projectArgument(expectedOutputId)) ||
+      !(expectedRunId === null || projectArgument(expectedRunId))
+    )
+      return rejected('프로젝트와 대화 상태를 확인해 주세요.');
+    return changingAI(() =>
+      apiClient?.command(id, 'generate', { expectedOutputId, expectedRunId }),
+    );
+  });
+  ipcMain.handle('ai:requirements', (event, ...args: unknown[]) => {
+    const [id, action, input, expectedOutputId, expectedRunId] = args;
+    if (
+      !trusted(event) ||
+      selecting ||
+      args.length !== 5 ||
+      !projectArgument(id) ||
+      !validRequirementsInput(action, input) ||
+      !(expectedOutputId === null || projectArgument(expectedOutputId)) ||
+      !(expectedRunId === null || projectArgument(expectedRunId))
+    )
+      return rejected('프로젝트와 요구분석 입력을 확인해 주세요.');
+    return changingAI(() =>
+      apiClient?.command(id, 'requirements', { action, input, expectedOutputId, expectedRunId }),
     );
   });
   ipcMain.handle('ai:reconnect', (event, ...args: unknown[]) => {

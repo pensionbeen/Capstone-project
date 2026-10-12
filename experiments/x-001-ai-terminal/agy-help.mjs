@@ -1,7 +1,7 @@
-// Recognize the observed Antigravity CLI 1.2.16 help layout only.
+// Recognize the observed Antigravity CLI 1.2.16–1.3.3 help layout only.
 // Help observation does not establish read-only enforcement or model support.
 const required = ['--print', '--model', '--effort', '--mode', '--sandbox',
-  '--output-format', '--print-timeout', '--disable-slash-commands'];
+  '--output-format', '--input-format', '--project', '--print-timeout', '--disable-slash-commands'];
 
 export function parseAgyHelp(text) {
   const lines = text.split(/\r?\n/u);

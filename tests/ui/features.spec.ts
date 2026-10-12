@@ -337,11 +337,12 @@ test('기능 확정 화면에서 포함 변경 저장 중 이전 값으로 편�
   await page.locator('.project-switcher').click();
   await page.getByRole('button', { name: '프로젝트 선택으로', exact: true }).click();
   await page.getByRole('button', { name: '이 프로젝트로 시작' }).click();
-  await page.getByRole('button', { name: '예시로 요구분석 시작' }).click();
-  await page.getByLabel('만들고 싶은 서비스').fill('할 일 앱');
-  await page.getByRole('button', { name: '요구분석 시작', exact: true }).click();
-  await page.getByRole('radio', { name: '나 혼자', exact: true }).check();
-  await page.getByRole('button', { name: '기능 초안 보기' }).click();
+  await page.getByRole('button', { name: 'AI로 요구분석 시작' }).click();
+  await page.getByRole('button', { name: '기능 직접 정리하기' }).click();
+  await page.getByRole('button', { name: '기능 직접 추가' }).click();
+  await page.getByLabel('기능 이름', { exact: true }).fill('할 일 추가·수정');
+  await page.getByLabel('완료 조건', { exact: true }).fill('할 일을 추가할 수 있다.');
+  await page.getByRole('button', { name: '기능 저장' }).click();
   await app.evaluate(({ ipcMain }) => {
     const handlers = (
       ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> }

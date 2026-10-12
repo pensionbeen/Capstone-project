@@ -152,7 +152,7 @@ export class LocalApiClient {
   }
   async command(
     id: string,
-    action: 'submit' | 'stop' | 'reset' | 'resize',
+    action: 'submit' | 'requirements' | 'generate' | 'stop' | 'reset' | 'resize',
     body: object,
   ): Promise<AIReply> {
     try {

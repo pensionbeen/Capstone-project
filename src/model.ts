@@ -1,4 +1,12 @@
-import type { StoredFeature } from '../shared/feature-plan';
+import type { StoredFeature, StoredVerification } from '../shared/feature-plan';
+import { criteriaLines } from '../shared/verification.ts';
+
+export {
+  canRecordVerification,
+  criteriaLines,
+  featureState,
+  progress,
+} from '../shared/verification.ts';
 
 export type Step = 0 | 1 | 2 | 3;
 export type View = 'overview' | 'features' | 'verification' | 'protection' | 'transfer' | 'history';
@@ -14,17 +22,7 @@ export interface Project {
 
 export type Feature = StoredFeature;
 
-export interface Verification {
-  id: string;
-  featureId: string;
-  featureTitle: string;
-  revision: number;
-  result: 'passed' | 'failed';
-  observation: string;
-  evidence: string;
-  checkedCriteria: string[];
-  createdAt: string;
-}
+export type Verification = StoredVerification;
 
 export interface Activity {
   id: string;
@@ -54,17 +52,6 @@ export const initialProtection: ProtectionDraft = {
   remove: true,
 };
 
-export function criteriaLines(value: string): string[] {
-  return [
-    ...new Set(
-      value
-        .split('\n')
-        .map((line) => line.trim())
-        .filter(Boolean),
-    ),
-  ];
-}
-
 export function validFeature(feature: Feature): boolean {
   return (
     feature.title.trim().length > 0 &&
@@ -85,43 +72,6 @@ export function editFeature(
     feature.description !== update.description ||
     feature.criteria !== update.criteria;
   return { ...feature, ...update, revision: feature.revision + (changed ? 1 : 0) };
-}
-
-export function featureState(
-  feature: Feature,
-  records: Verification[],
-): 'ready' | 'passed' | 'failed' | 'stale' {
-  const history = records.filter((record) => record.featureId === feature.id);
-  const current = history.filter((record) => record.revision === feature.revision).at(-1);
-  if (current) return current.result;
-  return history.length ? 'stale' : 'ready';
-}
-
-export function progress(features: Feature[], records: Verification[]) {
-  const included = features.filter((feature) => feature.included && feature.kind === 'leaf');
-  const done = included.filter((feature) => featureState(feature, records) === 'passed').length;
-  return {
-    total: included.length,
-    done,
-    percent: included.length ? Math.round((done / included.length) * 100) : null,
-  };
-}
-
-export function canRecordVerification(
-  feature: Feature,
-  record: Pick<Verification, 'result' | 'observation' | 'evidence' | 'checkedCriteria'>,
-): boolean {
-  if (
-    feature.kind !== 'leaf' ||
-    !validFeature(feature) ||
-    !record.observation.trim() ||
-    !record.evidence.trim()
-  )
-    return false;
-  return (
-    record.result === 'failed' ||
-    criteriaLines(feature.criteria).every((criterion) => record.checkedCriteria.includes(criterion))
-  );
 }
 
 export function validProtectionPath(value: string): boolean {

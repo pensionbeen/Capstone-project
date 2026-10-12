@@ -18,6 +18,12 @@ import {
   type ProjectFeaturePlan,
   validateFeaturePlan,
 } from '../dist/desktop/shared/feature-plan.js';
+import {
+  compareVerifications,
+  featureState,
+  nextVerificationTime,
+  progress,
+} from '../dist/desktop/shared/verification.js';
 
 function fixture() {
   mkdirSync('.runtime/storage-tests', { recursive: true });
@@ -377,6 +383,133 @@ function at<T>(items: T[], index: number): T {
   return item;
 }
 
+test('same revision edits, rollback and rewriting surviving verification history are rejected atomically', () => {
+  const f = fixture();
+  try {
+    const project = f.store.register(f.folder, true);
+    const before = f.store.saveFeaturePlan(project.id, samplePlan());
+    const altered = structuredClone(before);
+    at(altered.features, 1).description = '검증 후 바뀐 내용';
+    assert.throws(() => f.store.saveFeaturePlan(project.id, altered));
+    const rewritten = structuredClone(before);
+    at(rewritten.features, 1).criteria = '다른 조건';
+    at(rewritten.verifications, 0).checkedCriteria = ['다른 조건'];
+    assert.throws(() => f.store.saveFeaturePlan(project.id, rewritten));
+    const dropped = { ...before, verifications: [] };
+    assert.throws(() => f.store.saveFeaturePlan(project.id, dropped));
+    const newer = structuredClone(before);
+    at(newer.features, 1).revision++;
+    at(newer.features, 1).criteria += '\n추가 조건';
+    f.store.saveFeaturePlan(project.id, newer);
+    assert.throws(() => f.store.saveFeaturePlan(project.id, before));
+    assert.deepEqual(f.store.featurePlan(project.id), newer);
+  } finally {
+    f.store.close();
+  }
+});
+
+test('simultaneous contradictory records remain failed after save, restart and backup restore', () => {
+  const f = fixture();
+  let reopened: ProjectStore | undefined;
+  try {
+    const project = f.store.register(f.folder, true);
+    const plan = samplePlan();
+    const passed = at(plan.verifications, 0);
+    passed.id = 'ffffffff-ffff-4fff-bfff-ffffffffffff';
+    const failed = {
+      ...passed,
+      id: '00000000-0000-4000-8000-000000000000',
+      result: 'failed' as const,
+      checkedCriteria: [],
+    };
+    plan.verifications.push(failed);
+    const saved = f.store.saveFeaturePlan(project.id, plan);
+    const feature = at(saved.features, 1);
+    assert.equal(featureState(feature, saved.verifications), 'failed');
+    assert.equal(progress(saved.features, saved.verifications).done, 0);
+    assert.deepEqual(saved.verifications, [...plan.verifications].sort(compareVerifications));
+    const backup = f.store.backup();
+    f.store.close();
+    reopened = new ProjectStore(f.directory);
+    assert.equal(featureState(feature, reopened.featurePlan(project.id).verifications), 'failed');
+    const later = {
+      ...passed,
+      id: randomUUID(),
+      createdAt: nextVerificationTime(saved.verifications, 0),
+    };
+    reopened.saveFeaturePlan(project.id, {
+      ...saved,
+      verifications: [...saved.verifications, later],
+    });
+    assert.equal(progress(saved.features, reopened.featurePlan(project.id).verifications).done, 1);
+    reopened.restore(backup.id);
+    assert.equal(featureState(feature, reopened.featurePlan(project.id).verifications), 'failed');
+  } finally {
+    reopened?.close();
+    f.store.close();
+  }
+});
+
+test('current versions accept new results, preserve old evidence and reject moving old record IDs', () => {
+  const f = fixture();
+  try {
+    const project = f.store.register(f.folder, true);
+    const before = f.store.saveFeaturePlan(project.id, samplePlan());
+    const changed = structuredClone(before);
+    const feature = at(changed.features, 1);
+    feature.revision++;
+    feature.criteria += '\n새 조건';
+    const saved = f.store.saveFeaturePlan(project.id, changed);
+    assert.equal(featureState(feature, saved.verifications), 'stale');
+    for (const mutate of [
+      (plan: ProjectFeaturePlan) => {
+        at(plan.verifications, 0).evidence = '바꾼 근거';
+      },
+      (plan: ProjectFeaturePlan) => {
+        at(plan.verifications, 0).revision++;
+        at(plan.verifications, 0).checkedCriteria.push('새 조건');
+      },
+      (plan: ProjectFeaturePlan) => {
+        plan.verifications.push({ ...at(plan.verifications, 0), id: randomUUID() });
+      },
+    ]) {
+      const candidate = structuredClone(saved);
+      mutate(candidate);
+      assert.throws(() => f.store.saveFeaturePlan(project.id, candidate));
+      assert.deepEqual(f.store.featurePlan(project.id), saved);
+    }
+    const record = {
+      ...at(saved.verifications, 0),
+      id: randomUUID(),
+      revision: feature.revision,
+      checkedCriteria: feature.criteria.split('\n'),
+      createdAt: nextVerificationTime(saved.verifications),
+    };
+    const verified = f.store.saveFeaturePlan(project.id, {
+      ...saved,
+      verifications: [...saved.verifications, record],
+    });
+    assert.equal(featureState(feature, verified.verifications), 'passed');
+    const moved = structuredClone(verified);
+    const other = at(moved.features, 2);
+    moved.features = moved.features.filter((item) => item.id !== feature.id);
+    moved.dependencies = [];
+    moved.verifications = [
+      {
+        ...record,
+        featureId: other.id,
+        featureTitle: other.title,
+        revision: other.revision,
+        checkedCriteria: other.criteria.split('\n'),
+      },
+    ];
+    assert.throws(() => f.store.saveFeaturePlan(project.id, moved));
+    assert.deepEqual(f.store.featurePlan(project.id), verified);
+  } finally {
+    f.store.close();
+  }
+});
+
 test('feature hierarchy, dependency and revisioned verification persist per project and survive a verified backup restore', () => {
   const f = fixture();
   try {
@@ -536,6 +669,7 @@ test('v2 migration preserves relations and verification, snapshots v2, persists 
     assert.ok(v2);
     const pathPlan = structuredClone(original);
     at(pathPlan.features, 1).relatedPaths = ['src/한글 파일.ts', '계획/없는 파일.md'];
+    at(pathPlan.features, 1).revision++;
     assert.deepEqual(upgraded.saveFeaturePlan(project.id, pathPlan), pathPlan);
     const v3 = upgraded.backup();
     upgraded.restore(v2.id);

@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import type { AIAvailability } from '../../shared/ai.js';
 import { UUID } from './contracts.js';
 
-export const CODEX_VERSION = '0.160.0';
+export const CODEX_VERSION = '0.162.1';
 export const MODEL = 'gpt-6.1-sol';
 export const EFFORT = 'high';
 
@@ -129,7 +129,12 @@ export async function inspectCodex(signal?: AbortSignal): Promise<AIAvailability
   }
 }
 
-export function codexArguments(cwd: string, input: string, conversation?: string): string[] {
+export function codexArguments(
+  cwd: string,
+  input: string,
+  conversation?: string,
+  resultFile?: string,
+): string[] {
   if (conversation && !UUID.test(conversation)) throw new Error('INVALID_CONVERSATION');
   const args = [
     '--ask-for-approval',
@@ -157,6 +162,7 @@ export function codexArguments(cwd: string, input: string, conversation?: string
     '--cd',
     cwd,
   ];
+  if (resultFile) args.push('--output-last-message', resultFile);
   if (conversation) args.push('resume', conversation);
   // A fixed prefix also keeps the special lone '-' prompt from selecting stdin.
   args.push('--', `ORBIT 사용자의 요청입니다.\n\n${input}`);
@@ -166,7 +172,10 @@ export function codexArguments(cwd: string, input: string, conversation?: string
 // Only the first CLI-owned header is metadata; never parse user/AI text as status.
 export function readCodexHeader(text: string, cwd: string): { conversation: string } | null {
   const match = text.match(
-    /^OpenAI Codex v0\.160\.0\n--------\n([\s\S]{1,8192}?)\n--------\nuser\n/mu,
+    new RegExp(
+      `^OpenAI Codex v${CODEX_VERSION.replaceAll('.', '\\.')}\\n--------\\n([\\s\\S]{1,8192}?)\\n--------\\nuser\\n`,
+      'mu',
+    ),
   );
   if (!match || match.index === undefined || match.index > 4096) return null;
   if (/(?:^|\n)user\n/u.test(text.slice(0, match.index))) throw new Error('HEADER_INVALID');

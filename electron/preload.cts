@@ -2,6 +2,8 @@ import type { DesktopBridge } from '../shared/desktop.js';
 
 const { contextBridge, ipcRenderer } = require('electron') as typeof import('electron');
 const desktop: DesktopBridge = {
+  generateFeatureDraft: (projectId, expectedOutputId, expectedRunId) =>
+    ipcRenderer.invoke('ai:generate', projectId, expectedOutputId, expectedRunId),
   selectProjectFolder: () => ipcRenderer.invoke('project:select-folder'),
   inspectAI: () => ipcRenderer.invoke('ai:inspect'),
   readAIStatus: (projectId) => ipcRenderer.invoke('ai:status', projectId),
@@ -18,6 +20,15 @@ const desktop: DesktopBridge = {
   restoreProjects: (id) => ipcRenderer.invoke('storage:restore', id),
   sendAIPrompt: (projectId, prompt, expectedOutputId, expectedRunId) =>
     ipcRenderer.invoke('ai:submit', projectId, prompt, expectedOutputId, expectedRunId),
+  sendRequirementsPrompt: (projectId, action, input, expectedOutputId, expectedRunId) =>
+    ipcRenderer.invoke(
+      'ai:requirements',
+      projectId,
+      action,
+      input,
+      expectedOutputId,
+      expectedRunId,
+    ),
   readAISession: (projectId, after, outputId) =>
     ipcRenderer.invoke('ai:read', projectId, after, outputId),
   resizeAISession: (projectId: string, cols: number, rows: number) =>

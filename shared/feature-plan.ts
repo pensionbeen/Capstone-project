@@ -1,3 +1,4 @@
+import { canRecordVerification, criteriaLines } from './verification.js';
 import { validRelativePath } from './workspace-files.js';
 
 export type FeatureKind = 'group' | 'leaf';
@@ -42,14 +43,6 @@ const text = (value: unknown, max: number, required = false): value is string =>
   [...value].every(
     (character) => character.charCodeAt(0) >= 32 || character === '\n' || character === '\t',
   );
-const criteriaLines = (value: string) => [
-  ...new Set(
-    value
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean),
-  ),
-];
 
 export function emptyFeaturePlan(): ProjectFeaturePlan {
   return { features: [], dependencies: [], verifications: [] };
@@ -175,19 +168,7 @@ export function validateFeaturePlan(value: unknown): value is ProjectFeaturePlan
       !Number.isFinite(Date.parse(item.createdAt))
     )
       return false;
-    if (
-      item.revision === feature.revision &&
-      item.checkedCriteria.some((criterion) => !criteriaLines(feature.criteria).includes(criterion))
-    )
-      return false;
-    if (
-      item.revision === feature.revision &&
-      item.result === 'passed' &&
-      !criteriaLines(feature.criteria).every((criterion) =>
-        item.checkedCriteria.includes(criterion),
-      )
-    )
-      return false;
+    if (item.revision === feature.revision && !canRecordVerification(feature, item)) return false;
     verifications.add(item.id);
   }
   return true;

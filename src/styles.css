@@ -2429,6 +2429,43 @@ progress::-webkit-progress-value {
   display: flex;
   flex-direction: column;
   gap: 20px;
+  min-width: 0;
+}
+.requirements-guide {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 28px;
+  margin: 0 0 24px;
+  padding: 16px 20px 16px 40px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: #40516d;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.analysis-page .ai-console .field-hint,
+.requirements-navigation-hint {
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+.analysis-page .goal-composer > .field-hint {
+  margin: 8px 15px;
+}
+.ai-composer > .field-hint {
+  margin-top: 8px;
+}
+.analysis-page .composer-bottom {
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.analysis-page .ai-console-heading > div,
+.ai-availability > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.analysis-page .goal-composer textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 .ai-console-heading,
 .ai-availability,
@@ -2500,6 +2537,16 @@ progress::-webkit-progress-value {
   }
   .ai-console-heading {
     align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .analysis-page .composer-bottom {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 0 10px;
+  }
+  .requirements-guide {
+    flex-direction: column;
+    gap: 6px;
   }
 }
 /* Persisted project selection and bounded local backup list. */
