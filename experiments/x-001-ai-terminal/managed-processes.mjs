@@ -4,26 +4,43 @@ import path from 'node:path';
 const observedQueryProcesses = new Set();
 const queryHistoryLimit = 128;
 const queryResults = new Set(['SUCCESS', 'CIM_SNAPSHOT_FAILED', 'CIM_SNAPSHOT_INVALID']);
+const queryFailures = new Set(['TERMINATED', 'OUTPUT_LIMIT', 'SPAWN_FAILED', 'NONZERO_EXIT',
+  'QUERY_ERROR', 'STDERR', 'INVALID_JSON', 'INVALID_SNAPSHOT', 'OBSERVER_UNCONFIRMED']);
+
+function queryFailure(error, stderr) {
+  if (error) {
+    if (error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') return 'OUTPUT_LIMIT';
+    // execFile has no timeout-only error flag. Do not label every kill a timeout.
+    if (error.killed === true || error.signal) return 'TERMINATED';
+    if (['ENOENT', 'EACCES', 'EPERM'].includes(error.code)) return 'SPAWN_FAILED';
+    if (Number.isInteger(error.code) && error.code !== 0) return 'NONZERO_EXIT';
+    return 'QUERY_ERROR';
+  }
+  return stderr.trim() ? 'STDERR' : null;
+}
 
 // Diagnostic data only. Neither exclusions nor ownership checks read this history.
 export class SnapshotQueryHistory {
   #total = 0;
   #queries = [];
 
-  begin() {
+  begin(timeoutMs) {
     const sequence = ++this.#total;
     this.#queries.push({ sequence, queryPid: null, query: null,
-      startedAt: new Date().toISOString(), completedAt: null, result: 'PENDING' });
+      startedAt: new Date().toISOString(), completedAt: null, result: 'PENDING', failureKind: null,
+      timeoutMs: Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : null });
     if (this.#queries.length > queryHistoryLimit) this.#queries.shift();
     return sequence;
   }
 
-  complete(sequence, pid, supervisorPid, rows, result) {
+  complete(sequence, pid, supervisorPid, rows, result, failureKind = null) {
     const entry = this.#queries.find(query => query.sequence === sequence);
     if (!entry || entry.result !== 'PENDING') return;
     entry.completedAt = new Date().toISOString();
     entry.queryPid = Number.isSafeInteger(pid) && pid > 0 ? pid : null;
     entry.result = queryResults.has(result) ? result : 'DIAGNOSTIC_INVALID';
+    entry.failureKind = entry.result === 'SUCCESS' ? null
+      : queryFailures.has(failureKind) ? failureKind : 'UNCLASSIFIED';
     if (entry.result !== 'SUCCESS' || entry.queryPid === null) return;
     try {
       validateSnapshot(rows);
@@ -59,11 +76,17 @@ export function processSnapshot({ timeoutMs = 2000 } = {}) {
     '[pscustomobject]@{pid=[int]$_.ProcessId; parent=[int]$_.ParentProcessId; ' +
     'created=$_.CreationDate.ToUniversalTime().ToString("o"); name=$_.Name} }) | ConvertTo-Json -Compress';
   let sequence;
-  try { sequence = queryHistory.begin(); } catch { /* Diagnostics cannot block a query. */ }
+  try { sequence = queryHistory.begin(timeoutMs); } catch { /* Diagnostics cannot block a query. */ }
   return new Promise((resolve, reject) => {
     let query;
-    const record = (result, rows) => {
-      try { queryHistory.complete(sequence, query?.pid, process.pid, rows, result); }
+    const record = (result, rows, error = null, stderr = '') => {
+      try {
+        const failureKind = result === 'CIM_SNAPSHOT_INVALID'
+          ? error instanceof SyntaxError ? 'INVALID_JSON'
+            : error?.message === 'CIM_QUERY_IDENTITY_UNCONFIRMED' ? 'OBSERVER_UNCONFIRMED' : 'INVALID_SNAPSHOT'
+          : queryFailure(error, stderr);
+        queryHistory.complete(sequence, query?.pid, process.pid, rows, result, failureKind);
+      }
       catch { /* Diagnostics cannot change exclusion, ownership, or cleanup decisions. */ }
     };
     try {
@@ -73,19 +96,24 @@ export function processSnapshot({ timeoutMs = 2000 } = {}) {
       { timeout: timeoutMs, maxBuffer: 2 * 1024 * 1024, windowsHide: true, encoding: 'utf8' },
       (error, stdout, stderr) => {
         if (error || stderr.trim()) {
-          record('CIM_SNAPSHOT_FAILED'); reject(new Error('CIM_SNAPSHOT_FAILED')); return;
+          record('CIM_SNAPSHOT_FAILED', undefined, error, stderr);
+          reject(new Error('CIM_SNAPSHOT_FAILED')); return;
         }
         let rows, filtered;
         try {
           rows = JSON.parse(stdout);
           filtered = excludeSnapshotObserver(rows, query.pid, process.pid, observedQueryProcesses);
-        } catch {
-          record('CIM_SNAPSHOT_INVALID'); reject(new Error('CIM_SNAPSHOT_INVALID')); return;
+        } catch (error) {
+          record('CIM_SNAPSHOT_INVALID', undefined, error);
+          reject(new Error('CIM_SNAPSHOT_INVALID')); return;
         }
         record('SUCCESS', rows);
         resolve(filtered);
       });
-    } catch (error) { record('CIM_SNAPSHOT_FAILED'); reject(error); }
+    } catch (error) {
+      record('CIM_SNAPSHOT_FAILED', undefined, error);
+      reject(new Error('CIM_SNAPSHOT_FAILED'));
+    }
   });
 }
 
