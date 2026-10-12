@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from 'react';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { RequirementsDraft } from '../../shared/requirements';
 import { AIConversation } from '../components/AIConsole';
 import { Button, Notice, PageHeading } from '../components/ui';
@@ -12,6 +12,7 @@ export function RequirementsPage({
   busy,
   onBack,
   onManual,
+  children,
 }: {
   project: Project;
   draft: RequirementsDraft;
@@ -20,6 +21,7 @@ export function RequirementsPage({
   busy: boolean;
   onBack: () => void;
   onManual: () => void;
+  children?: ReactNode;
 }) {
   return (
     <section className="setup-page analysis-page">
@@ -28,19 +30,29 @@ export function RequirementsPage({
         title="AI와 요구사항을 정리해요"
         description="아이디어를 보내고, AI의 질문에 답하면서 만들 범위를 구체화해 보세요."
       />
+      <ol className="requirements-guide" aria-label="요구분석 순서">
+        <li>목표를 보내요</li>
+        <li>질문을 읽고 답변·정정해요</li>
+        <li>기능과 완료 조건을 확인해요</li>
+      </ol>
       {!enabled && (
         <Notice>현재 요구분석은 Codex로 연결돼요. 이전 단계에서 Codex를 선택해 주세요.</Notice>
       )}
       <AIConversation project={project} requirements={{ draft, onChange, enabled }} />
+      {children}
       <p className="analysis-disclaimer">
         대화 결과는 기능 목록에 자동 적용되지 않아요. 정리한 내용을 보고 기능과 완료 조건을 직접
         작성할 수 있어요.
       </p>
+      <p className="field-hint requirements-navigation-hint">
+        이전 단계로 이동해도 현재 AI 실행은 이어지고, 목표와 답변 초안은 이 창에 유지돼요.
+        {busy && ' 기능을 정리하려면 실행이 끝나거나 중단 후 정리가 끝날 때까지 기다려 주세요.'}
+      </p>
       <div className="step-footer">
-        <Button variant="ghost" onClick={onBack}>
+        <Button type="button" variant="ghost" onClick={onBack}>
           이전 단계
         </Button>
-        <Button onClick={onManual} disabled={busy} icon="arrow">
+        <Button type="button" onClick={onManual} disabled={busy} icon="arrow">
           기능 직접 정리하기
         </Button>
       </div>

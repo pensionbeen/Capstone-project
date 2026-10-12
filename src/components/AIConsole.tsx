@@ -1,6 +1,14 @@
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
-import { type Dispatch, type SetStateAction, useEffect, useId, useRef, useState } from 'react';
+import {
+  type Dispatch,
+  type KeyboardEvent,
+  type SetStateAction,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from 'react';
 import {
   type AIAvailability,
   type AISnapshot,
@@ -41,6 +49,9 @@ export function AIConversation({
   const commandPending = useRef(false);
   const lifecycle = useRef(0);
   const inputId = useId();
+  const goalId = useId();
+  const goalHintId = useId();
+  const answerHintId = useId();
   const [availability, setAvailability] = useState<AIAvailability | null>(null);
   const [checking, setChecking] = useState(false);
   const [snapshot, setSnapshot] = useState<AISnapshot>(emptyAISnapshot);
@@ -71,13 +82,19 @@ export function AIConversation({
 
   async function check() {
     if (!window.desktop) return;
+    const generation = lifecycle.current;
     setChecking(true);
     try {
-      setAvailability(await window.desktop.inspectAI());
+      const result = await window.desktop.inspectAI();
+      if (generation === lifecycle.current) setAvailability(result);
     } catch {
-      setAvailability({ status: 'error', message: '앱과 연결되지 않았어요. 다시 확인해 주세요.' });
+      if (generation === lifecycle.current)
+        setAvailability({
+          status: 'error',
+          message: '앱과 연결되지 않았어요. 다시 확인해 주세요.',
+        });
     } finally {
-      setChecking(false);
+      if (generation === lifecycle.current) setChecking(false);
     }
   }
 
@@ -87,6 +104,7 @@ export function AIConversation({
     if (!element || !bridge || !projectId) return;
     const terminal = new Terminal({
       disableStdin: true,
+      screenReaderMode: true,
       convertEol: false,
       cursorBlink: false,
       scrollback: 1500,
@@ -139,10 +157,10 @@ export function AIConversation({
     const observer = new ResizeObserver(resize);
     observer.observe(element);
     resize();
-    const read = async (after: number) => {
+    const read = async (after: number, version: number) => {
       const result = await bridge.readAISession(projectId, after, outputId);
       if ('connectionError' in result) {
-        if (!disposed) {
+        if (!disposed && version === submissionVersion.current) {
           setConnectionMessage(result.connectionError.message);
           setRetryRequired(result.connectionError.code === 'retry-required');
         }
@@ -153,13 +171,13 @@ export function AIConversation({
     const poll = async () => {
       const version = submissionVersion.current;
       try {
-        let next = await read(cursor);
+        let next = await read(cursor, version);
         if (disposed || version !== submissionVersion.current) return;
         if (next.outputId !== outputId || next.nextSequence < cursor) {
           terminal.reset();
           cursor = 0;
           outputId = next.outputId;
-          next = await read(0);
+          next = await read(0, version);
           if (disposed || version !== submissionVersion.current) return;
           outputId = next.outputId;
         }
@@ -199,7 +217,7 @@ export function AIConversation({
           resize();
         }
       } catch {
-        if (!disposed) setConnected(false);
+        if (!disposed && version === submissionVersion.current) setConnected(false);
       } finally {
         if (!disposed) polling = setTimeout(poll, 250);
       }
@@ -239,13 +257,20 @@ export function AIConversation({
             snapshot.id,
           )
         : await bridge.sendAIPrompt(projectId, text, snapshot.outputId, snapshot.id);
+      // The draft lives above this screen. Record an accepted answer even after navigation,
+      // while preserving edits and any newer submission in that draft.
+      if (result.ok && action === 'answer' && onRequirementsChange && result.runId) {
+        const runId = result.runId;
+        onRequirementsChange((draft) =>
+          draft.answer === text && !draft.pendingAnswer
+            ? { ...draft, pendingAnswer: { runId, text } }
+            : draft,
+        );
+      }
       if (generation !== lifecycle.current) return;
       if (result.ok) {
         submissionVersion.current++;
-        const runId = result.runId;
-        if (action === 'answer' && requirements && runId)
-          requirements.onChange((draft) => ({ ...draft, pendingAnswer: { runId, text } }));
-        else if (!action) setChatInput('');
+        if (!action) setChatInput('');
         setSnapshot((old) => ({
           ...old,
           id: result.runId ?? old.id,
@@ -267,6 +292,29 @@ export function AIConversation({
       if (generation === lifecycle.current) setSending(false);
     }
   }
+
+  function submitWithKeyboard(
+    event: KeyboardEvent<HTMLTextAreaElement>,
+    action?: RequirementsAction,
+  ) {
+    if (
+      event.key !== 'Enter' ||
+      (!event.ctrlKey && !event.metaKey) ||
+      event.nativeEvent.isComposing
+    )
+      return;
+    event.preventDefault();
+    void send(action);
+  }
+
+  const goalAction = matching && snapshot.conversationReady ? 'revise-goal' : 'start';
+  const answerHint = !requirements?.enabled
+    ? '이전 단계에서 Codex를 선택하면 전송할 수 있어요.'
+    : busy
+      ? '실행 중에도 다음 답변을 적을 수 있어요. 전송은 현재 실행과 정리가 끝난 뒤 가능해요.'
+      : !matching || !snapshot.requirementsGoalConfirmed
+        ? '답변을 미리 적어 둘 수 있어요. 목표를 보내고 질문을 받은 뒤 전송해 주세요.'
+        : '질문에 답하거나 이전 답변에서 바꿀 내용을 보내세요.';
 
   return (
     <div className="ai-console">
@@ -294,7 +342,12 @@ export function AIConversation({
         <span>
           {availability?.message ?? '먼저 이 컴퓨터의 Codex 설치·로그인 상태를 확인해 주세요.'}
         </span>
-        <Button variant="secondary" onClick={check} disabled={checking || busy || !projectId}>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={check}
+          disabled={checking || busy || !projectId}
+        >
           {checking ? '연결 준비 확인 중' : availability ? '연결 준비 다시 확인' : '연결 준비 확인'}
         </Button>
       </div>
@@ -308,14 +361,15 @@ export function AIConversation({
           className="goal-composer"
           onSubmit={(event) => {
             event.preventDefault();
-            void send(matching && snapshot.conversationReady ? 'revise-goal' : 'start');
+            void send(goalAction);
           }}
         >
-          <label htmlFor="requirements-goal" className="field-label">
+          <label htmlFor={goalId} className="field-label">
             만들고 싶은 서비스
           </label>
           <textarea
-            id="requirements-goal"
+            id={goalId}
+            aria-describedby={goalHintId}
             value={goal}
             maxLength={REQUIREMENTS_GOAL_LIMIT}
             rows={4}
@@ -323,8 +377,12 @@ export function AIConversation({
             onChange={(event) =>
               requirements.onChange((draft) => ({ ...draft, goal: event.target.value }))
             }
+            onKeyDown={(event) => submitWithKeyboard(event, goalAction)}
             placeholder="누가 어떤 일을 할 수 있는 앱을 만들고 싶은지 적어 주세요."
           />
+          <p id={goalHintId} className="field-hint">
+            대상 사용자와 첫 버전에 필요한 일을 적어 주세요. Enter로 줄바꿈 · Ctrl/⌘+Enter로 전송
+          </p>
           <div className="composer-bottom">
             <span>{goal.length.toLocaleString()} / 2,000</span>
             <Button
@@ -362,19 +420,29 @@ export function AIConversation({
       )}
       <div className="ai-run-status" role="status">
         <span className={`status-dot ${busy ? 'running' : ''}`} />
-        {snapshot.message}
+        {requirements && snapshot.state === 'idle' && !snapshot.id
+          ? '목표를 보내면 요구분석 질문이 여기에 표시돼요.'
+          : snapshot.message}
       </div>
       {projectId && !connected && (
         <div className="form-message" role="status">
           {connectionMessage}
           {retryRequired && (
             <Button
+              type="button"
               variant="secondary"
               onClick={async () => {
-                const reply = await window.desktop?.reconnectAI();
-                if (reply?.ok) {
-                  setRetryRequired(false);
-                  setConnectionMessage('앱 내부 연결을 확인하고 있어요.');
+                const generation = lifecycle.current;
+                try {
+                  const reply = await window.desktop?.reconnectAI();
+                  if (generation !== lifecycle.current) return;
+                  if (reply?.ok) {
+                    setRetryRequired(false);
+                    setConnectionMessage('앱 내부 연결을 확인하고 있어요.');
+                  } else setMessage(reply?.message ?? '앱과 다시 연결하지 못했어요.');
+                } catch {
+                  if (generation === lifecycle.current)
+                    setMessage('앱과 다시 연결하지 못했어요. 입력을 유지했어요.');
                 }
               }}
             >
@@ -401,9 +469,10 @@ export function AIConversation({
         </label>
         <textarea
           id={inputId}
+          aria-describedby={answerHintId}
           value={input}
           maxLength={requirements ? REQUIREMENTS_ANSWER_LIMIT : 8000}
-          disabled={sending || !matching}
+          disabled={sending || (!requirements && !matching)}
           rows={3}
           placeholder={
             requirements
@@ -411,20 +480,33 @@ export function AIConversation({
               : '예: 이 프로젝트에서 먼저 확인할 내용을 알려 줘.'
           }
           onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => submitWithKeyboard(event, requirements ? 'answer' : undefined)}
         />
+        <p id={answerHintId} className="field-hint">
+          {requirements ? answerHint : '메시지를 적고 전송해 주세요.'} Enter로 줄바꿈 ·
+          Ctrl/⌘+Enter로 전송
+        </p>
         <div className="ai-composer-actions">
           <span className="field-hint">
             {input.length.toLocaleString()} / {requirements ? '6,000' : '8,000'} · Enter로 줄바꿈
           </span>
           {busy ? (
             <Button
+              type="button"
               variant="secondary"
               disabled={sending || snapshot.state === 'stopping' || !snapshot.id}
               onClick={async () => {
                 if (!projectId) return;
-                const result = await window.desktop?.stopAISession(projectId, snapshot.id);
-                if (result && !result.ok)
-                  setMessage(result.message ?? '중단 요청을 확인해 주세요.');
+                const generation = lifecycle.current;
+                try {
+                  const result = await window.desktop?.stopAISession(projectId, snapshot.id);
+                  if (generation !== lifecycle.current) return;
+                  if (result && !result.ok)
+                    setMessage(result.message ?? '중단 요청을 확인해 주세요.');
+                } catch {
+                  if (generation === lifecycle.current)
+                    setMessage('중단 결과를 확인하지 못했어요. 현재 실행 상태를 확인해 주세요.');
+                }
               }}
             >
               {sending
@@ -437,7 +519,7 @@ export function AIConversation({
             <Button
               type="submit"
               disabled={
-                !input.trim() ||
+                (requirements ? !validRequirementsInput('answer', input) : !input.trim()) ||
                 !canSend ||
                 !matching ||
                 (Boolean(requirements) &&
@@ -474,12 +556,14 @@ export function AIConversation({
         </p>
         {snapshot.truncated && <p>이전 출력 일부는 보관 한도를 넘어 생략했어요.</p>}
         <Button
+          type="button"
           variant="ghost"
           disabled={busy || !connected || !snapshot.cleanupConfirmed || !projectId}
           onClick={async () => {
             if (!projectId) return;
             if (commandPending.current) return;
             commandPending.current = true;
+            const generation = lifecycle.current;
             submissionVersion.current++;
             setSending(true);
             try {
@@ -488,14 +572,16 @@ export function AIConversation({
                 snapshot.outputId,
                 snapshot.id,
               );
+              if (generation !== lifecycle.current) return;
               if (result && !result.ok)
                 setMessage(result.message ?? '새 대화를 시작하지 못했어요.');
               else submissionVersion.current++;
             } catch {
-              setMessage('초기화 결과를 확인하지 못했어요. 현재 대화 상태를 확인해 주세요.');
+              if (generation === lifecycle.current)
+                setMessage('초기화 결과를 확인하지 못했어요. 현재 대화 상태를 확인해 주세요.');
             } finally {
               commandPending.current = false;
-              setSending(false);
+              if (generation === lifecycle.current) setSending(false);
             }
           }}
         >
