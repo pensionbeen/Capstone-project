@@ -7,10 +7,28 @@ const initializationFailure = process.argv[2] === '--initialization-failure';
 const reportPath = process.argv[policyFailure || initializationFailure ? 3 : 2];
 if (!reportPath) throw new Error('Usage: node verify-report.mjs [--policy-failure|--initialization-failure] REPORT_JSON');
 const report = JSON.parse(await readFile(reportPath, 'utf8'));
-assert.equal(report.schemaVersion, 1);
+assert.ok([1, 2].includes(report.schemaVersion));
 assert.equal(report.productProtectionApproved, false, 'This experiment must not approve T-014.');
 assert.equal(report.controller.elevated, false);
 assert.equal(report.controller.restricted, false);
+function row(rows, name) {
+  const matches = rows.filter((item) => item.Operation === name);
+  assert.equal(matches.length, 1, `Exactly one ${name} observation is required.`);
+  return matches[0];
+}
+function markerRead(item, hash) {
+  assert.equal(item.Success, true, item.Operation);
+  assert.equal(item.Win32Error, 0, item.Operation);
+  assert.equal(item.Bytes, 64, item.Operation);
+  assert.equal(item.Sha256, hash, item.Operation);
+}
+function userReads(rows) {
+  const expected = report.expectedReadHashes;
+  assert.match(expected.allowed, /^[0-9a-f]{64}$/);
+  assert.match(expected.protected, /^[0-9a-f]{64}$/);
+  assert.notEqual(expected.allowed, expected.protected);
+  for (const kind of ['allowed', 'protected']) markerRead(row(rows, `${kind}/read`), expected[kind]);
+}
 if (initializationFailure && !report.aclRestored) {
   const recovery = JSON.parse(await readFile(join(dirname(reportPath), 'recovery.json'), 'utf8'));
   assert.equal(recovery.aclRestored, true);
@@ -29,7 +47,14 @@ if (initializationFailure) {
   assert.equal(report.restrictedLaunch.TimedOut, false);
   assert.equal(report.restrictedDirect, undefined, 'Unexecuted worker observations must remain absent.');
   assert.equal(report.restrictedChild, undefined);
-  assert.equal(report.ordinaryUser.length, 6);
+  assert.equal(report.ordinaryUser.length, report.schemaVersion === 1 ? 6 : 2);
+  if (report.schemaVersion === 2) {
+    userReads(report.ordinaryUser);
+    assert.equal(report.restrictedLaunch.CleanupConfirmed, true);
+    assert.equal(report.privateDesktopHandleClosed, true);
+    assert.equal(report.privateDesktopAbsentAfterClose, true);
+    assert.equal(report.privateDesktopReopenError, 2);
+  }
   for (const item of report.ordinaryUser) {
     assert.equal(item.Success, true);
     assert.equal(item.Win32Error, 0);
@@ -47,14 +72,28 @@ if (policyFailure) {
   process.exit(0);
 }
 
+assert.equal(report.schemaVersion, 2, 'Full acceptance requires the randomized sibling read controls.');
 assert.equal(report.observationsComplete, true, report.error ?? undefined);
 assert.equal(report.error, null);
 assert.equal(report.hardenedFilesUnchanged, true);
-for (const normal of [report.ordinaryUser, report.ordinaryUserAfter]) {
-  assert.equal(normal.length, 6);
-  for (const row of normal) {
-    assert.equal(row.Success, true, row.Operation);
-    assert.equal(row.Win32Error, 0, row.Operation);
+assert.deepEqual(report.protectedAfterRestricted, report.protectedBeforeRestricted);
+assert.equal(report.protectedBeforeRestricted['protected.txt'], report.expectedReadHashes.protected);
+assert.equal(report.workerAllowedMutationsVerified, true);
+assert.equal(report.childAllowedMutationsVerified, true);
+assert.equal(report.launchedProcessesGone, true);
+assert.equal(report.privateDesktopHandleClosed, true);
+assert.equal(report.privateDesktopAbsentAfterClose, true);
+assert.equal(report.privateDesktopReopenError, 2);
+userReads(report.ordinaryUser);
+userReads(report.ordinaryUserAfter);
+assert.equal(report.ordinaryUser.length, 2);
+assert.equal(report.ordinaryUserAfter.length, 6);
+for (const kind of ['allowed', 'protected']) {
+  for (const op of ['write', 'delete']) {
+    const result = row(report.ordinaryUserAfter, `${kind}/${op}`);
+    assert.equal(result.Success, true);
+    assert.equal(result.Win32Error, 0);
+    if (op === 'write') assert.equal(result.Bytes, 4);
   }
 }
 for (const launch of [report.restrictedLaunch, report.restrictedDirect.childLaunch, report.preopenedLaunch]) {
@@ -62,8 +101,10 @@ for (const launch of [report.restrictedLaunch, report.restrictedDirect.childLaun
   assert.equal(launch.Error, 0);
   assert.equal(launch.ExitCode, 0);
   assert.equal(launch.JobEmpty, true);
+  assert.equal(launch.CleanupConfirmed, true);
   assert.equal(launch.TimedOut, false);
 }
+assert.ok(report.requestedRestriction.restrictingSids.length > 0);
 for (const actor of [report.restrictedDirect, report.restrictedChild, report.preopenedHandle]) {
   assert.equal(actor.identity.restricted, true);
   assert.equal(actor.identity.elevated, false);
@@ -74,16 +115,16 @@ assert.notEqual(report.restrictedDirect.identity.pid, report.restrictedChild.ide
 assert.equal(report.restrictedLaunch.Pid, report.restrictedDirect.identity.pid);
 assert.equal(report.restrictedDirect.childLaunch.Pid, report.restrictedChild.identity.pid);
 
-const row = (rows, name) => {
-  const matches = rows.filter((item) => item.Operation === name);
-  assert.equal(matches.length, 1, `Exactly one ${name} observation is required.`);
-  return matches[0];
-};
 const denied = (item) => {
   assert.equal(item.Success, false, item.Operation);
   assert.equal(item.Win32Error, 5, item.Operation);
 };
 for (const actor of [report.restrictedDirect, report.restrictedChild]) {
+  assert.equal(actor.readPassed, true);
+  markerRead(row(actor.rows, 'allowed/read'), report.expectedReadHashes.allowed);
+  assert.equal(row(actor.rows, 'protected/read').Bytes, 0);
+  assert.equal(row(actor.rows, 'protected/read').Sha256, null);
+  assert.equal(row(actor.rows, 'allowed/write').Bytes, 4);
   for (const operation of ['read', 'write', 'delete']) {
     denied(row(actor.rows, `protected/${operation}`));
     const allowed = row(actor.rows, `allowed/${operation}`);
