@@ -15,6 +15,7 @@ import { emptyAISnapshot } from '../shared/ai.js';
 import type { FolderResult } from '../shared/desktop.js';
 import type { ProjectFeaturePlan } from '../shared/feature-plan.js';
 import { validFeatureSessionInput } from '../shared/feature-session.js';
+import { protectionUnavailable, validProtection } from '../shared/protection.js';
 import { validRequirementsInput } from '../shared/requirements.js';
 import type { ProjectCatalog, ProjectResult, StorageResult } from '../shared/storage.js';
 import { promptIsValid, rejected, sizeIsValid, UUID } from './ai/contracts.js';
@@ -33,6 +34,7 @@ let selecting = false;
 let allowExit = false;
 let closing: Promise<void> | undefined;
 export const aiSession = new SessionManager({
+  launchHold: () => (projectStore ? projectStore.launchHold() : protectionUnavailable),
   loadFeature: (projectId, featureId) =>
     projectStore?.featurePlan(projectId).features.find((feature) => feature.id === featureId),
 });
@@ -273,6 +275,60 @@ void app.whenReady().then(async () => {
       return { ok: false, message: storageMessage(error) };
     }
   });
+  ipcMain.handle(
+    'project:save-protection',
+    async (event, ...args: unknown[]): Promise<StorageResult> => {
+      const [id, draft] = args;
+      if (
+        !trusted(event) ||
+        args.length !== 2 ||
+        !projectArgument(id) ||
+        !projectStore ||
+        !validProtection(draft)
+      )
+        return { ok: false, message: '저장할 프로젝트와 보호 요청을 확인해 주세요.' };
+      if (draft.paths.length === 0 && (!mayChangeProjects() || !aiSession.canChangeProtection))
+        return {
+          ok: false,
+          message:
+            '보호 요청을 저장하지 못했어요. Codex 실행과 로그인 확인이 끝나고 정리된 뒤 다시 저장해 주세요.',
+        };
+      try {
+        let confirmedInactiveClear = false;
+        if (draft.paths.length === 0 && projectStore.catalog().activeProjectId !== id) {
+          if (!mainWindow || projectStore.catalog().heldProjectId !== id)
+            return { ok: false, message: '해제할 보호 요청을 다시 확인해 주세요.' };
+          const confirmation = await dialog.showMessageBox(mainWindow, {
+            type: 'warning',
+            title: '보호 요청 해제',
+            message: '이 프로젝트의 보호 요청을 해제할까요?',
+            detail: projectStore.project(id).path,
+            buttons: ['취소', '이 보호 요청 해제'],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true,
+          });
+          if (confirmation.response !== 1 || !mayChangeProjects() || !aiSession.canChangeProtection)
+            return { ok: false, message: '보호 요청을 유지했어요.' };
+          confirmedInactiveClear = true;
+        }
+        projectStore.saveProtection(id, draft, confirmedInactiveClear);
+        const cleaned = draft.paths.length === 0 || (await aiSession.stopForProtection());
+        const catalog = projectStore.catalog();
+        return {
+          ok: true,
+          message: cleaned
+            ? (catalog.launchHold ?? '저장된 보호 요청이 없어 Codex 실행 보류를 해제했어요.')
+            : '새 실행을 보류했어요. 이전 Codex 실행의 종료를 확인하지 못했어요. 실행 상태를 확인해 주세요.',
+          catalog,
+        };
+      } catch (error) {
+        const hold = aiSession.launchHold();
+        if (hold) await aiSession.stopForProtection();
+        return { ok: false, message: storageMessage(error), ...(hold ? { launchHold: hold } : {}) };
+      }
+    },
+  );
   ipcMain.handle('features:save', (event, ...args: unknown[]) => {
     const [id, plan] = args;
     if (!trusted(event) || args.length !== 2 || !projectArgument(id) || !projectStore)
@@ -378,7 +434,7 @@ void app.whenReady().then(async () => {
       });
       if (answer.response !== 1)
         return { ok: false, message: '복원을 취소했어요. 현재 목록을 유지해요.' };
-      if (closing || allowExit || !aiSession.canChangeProjects)
+      if (closing || allowExit || !aiSession.canChangeProtection)
         return { ok: false, message: '앱 실행을 정리한 뒤 다시 시도해 주세요.' };
       projectStore.restore(id);
       syncProjects(true);

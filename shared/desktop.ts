@@ -2,6 +2,7 @@ import type { AIAvailability, AIReply, AISnapshot } from './ai.js';
 import type { ProjectFeaturePlan } from './feature-plan.js';
 import type { FeatureSessionAction } from './feature-session.js';
 import type { ConnectionFailure } from './local-api.js';
+import type { ProtectionDraft } from './protection.js';
 import type { RequirementsAction } from './requirements.js';
 import type {
   FeaturePlanResult,
@@ -24,6 +25,7 @@ export interface DesktopBridge {
   listProjects: () => Promise<ProjectCatalog>;
   activateProject: (id: string) => Promise<ProjectResult>;
   saveProjectName: (id: string, name: string) => Promise<ProjectResult>;
+  saveProtection: (id: string, draft: ProtectionDraft) => Promise<StorageResult>;
   loadFeaturePlan: (id: string) => Promise<FeaturePlanResult>;
   saveFeaturePlan: (id: string, plan: ProjectFeaturePlan) => Promise<FeaturePlanResult>;
   listProjectFiles: (id: string, path: string) => Promise<FileListResult>;

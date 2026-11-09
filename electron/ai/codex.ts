@@ -113,6 +113,7 @@ export async function inspectCodex(signal?: AbortSignal): Promise<AIAvailability
     };
   try {
     const file = await installedCodex();
+    if (signal?.aborted) return { status: 'error', message: 'Codex 로그인 확인을 취소했어요.' };
     return await queryLogin(file, signal);
   } catch (error) {
     const message = error instanceof Error ? error.message : '';

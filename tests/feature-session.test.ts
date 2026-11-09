@@ -94,6 +94,52 @@ async function settled(manager: SessionManager) {
   assert.equal(manager.busy, false);
 }
 
+test('새 보호 요청은 로그인 확인을 취소하고 준비 중인 실행이 프로세스를 시작하기 전에 정리를 기다린다', async () => {
+  const prepared = deferred();
+  const finish = deferred();
+  let held = false;
+  let loginAborted = false;
+  let snapshots = 0;
+  const manager = new SessionManager({
+    launchHold: () => (held ? '보호 실행 보류' : null),
+    inspect: (signal) =>
+      new Promise((done) =>
+        signal?.addEventListener(
+          'abort',
+          () => {
+            loginAborted = true;
+            done({ status: 'error', message: '시험 로그인 확인 취소' });
+          },
+          { once: true },
+        ),
+      ),
+    prepare: async () => {
+      prepared.resolve();
+      await finish.promise;
+      return { file: 'synthetic-unused', args: [], inspectHeader: false };
+    },
+    snapshot: async () => {
+      snapshots++;
+      throw new Error('unexpected process preparation');
+    },
+  });
+  const id = manager.registerProject(resolve('.'));
+  assert.ok(id);
+  const login = manager.availabilityStatus();
+  assert.equal(manager.canChangeProtection, false);
+  assert.equal(manager.submit(id, '가짜 요청').ok, true);
+  await prepared.promise;
+  held = true;
+  const cleanup = manager.stopForProtection();
+  assert.ok(loginAborted);
+  assert.equal(manager.submit(id, '추가 요청').ok, false);
+  finish.resolve();
+  assert.equal(await cleanup, true);
+  assert.equal((await login).status, 'error');
+  assert.equal(snapshots, 0);
+  assert.equal(manager.read(id, 0).cleanupConfirmed, true);
+});
+
 test('기능 입력은 시작 빈문자·답변 필수·2천자·제어문자 경계를 지킨다', () => {
   assert.equal(validFeatureSessionInput('start', ''), true);
   assert.equal(validFeatureSessionInput('answer', ' \n\t'), false);
