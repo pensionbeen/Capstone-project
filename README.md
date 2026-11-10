@@ -26,20 +26,16 @@ npm.cmd run dev
 
 1. [현재 상태와 다음 작업](docs/STATUS.md)
 2. [목표·요구사항·출처·미정 사항](docs/PROJECT_OVERVIEW.md)
-3. [프로토타입부터 최종 제출까지 로드맵](docs/ROADMAP.md)
 4. [작업별 완료·검증 기준과 요구사항 추적](docs/TASKS.md)
 5. 필요할 때 [구조·기술 실험](docs/ARCHITECTURE.md), [AI 협업·모델·기록](docs/AI_WORKFLOW.md), [Git·개발·복구 규칙](docs/DEVELOPMENT_RULES.md)
 6. 개발 준비에는 [T-001 환경·CLI·버전 후보 결과](docs/ENVIRONMENT.md)
 7. [이번 실제 작업 기록](docs/work-log/2026-10-04.md)
-8. AI 자동 운영 실험은 [X-001 결과](docs/experiments/X-001.md) → [실행 방법](experiments/x-001-ai-terminal/README.md)
+8. AI 사용 실험은 [X-001 결과](docs/experiments/X-001.md) → [실행 방법](experiments/x-001-ai-terminal/README.md)
 
 AI 시작 지침은 [AGENTS.md](AGENTS.md), 독립 검토 지침은 [GEMINI.md](GEMINI.md)에 있다.
 
 ## 기준 자료
 
 - [Notion 졸업작품 기획](https://app.notion.com/p/3e86817a257180cea8bed02a973ad970)
-- [기존 프로토타입 일정](https://app.notion.com/p/3e96817a25718139b6b8ccf190650aa4)
-- [개발 현황·작업 기록](https://app.notion.com/p/3ee6817a2571813fb2dbe1f99ad69a59)
 - [대상 GitHub 저장소](https://github.com/pensionbeen/Capstone-project)
 
-프로토타입 내부 마감은 **2026-10-19 23:59 KST**이며 학교 최종 제출일은 미정이다. 문서의 계획·실제 구현·검증 완료를 구분한다.
