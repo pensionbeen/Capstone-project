@@ -1,4 +1,5 @@
 import type { AISnapshot } from './ai.js';
+import type { ProtectionDraft } from './protection.js';
 
 export const API_VERSION = 1;
 export interface ConnectionFailure {
@@ -8,6 +9,7 @@ export interface LocalProject {
   id: string;
   name: string;
   path: string;
+  protection?: ProtectionDraft;
 }
 export interface ApiFailure {
   code: string;

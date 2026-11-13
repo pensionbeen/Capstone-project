@@ -1,4 +1,9 @@
 import type { StoredFeature, StoredVerification } from '../shared/feature-plan';
+import type { ProtectionDraft } from '../shared/protection';
+
+export type { ProtectionDraft } from '../shared/protection';
+export { validProtectionPath } from '../shared/protection.ts';
+
 import { criteriaLines } from '../shared/verification.ts';
 
 export {
@@ -30,13 +35,6 @@ export interface Activity {
   title: string;
   detail: string;
   createdAt: string;
-}
-
-export interface ProtectionDraft {
-  paths: string[];
-  read: boolean;
-  write: boolean;
-  remove: boolean;
 }
 
 export const steps = ['프로젝트 선택', 'AI 연결·보호 설정', '요구분석', '기능 확정'] as const;
@@ -72,18 +70,6 @@ export function editFeature(
     feature.description !== update.description ||
     feature.criteria !== update.criteria;
   return { ...feature, ...update, revision: feature.revision + (changed ? 1 : 0) };
-}
-
-export function validProtectionPath(value: string): boolean {
-  const trimmed = value.trim();
-  return (
-    trimmed.length > 0 &&
-    trimmed.length <= 200 &&
-    !/[:*?<>"|]/.test(trimmed) &&
-    ![...trimmed].some((character) => character.charCodeAt(0) < 32) &&
-    !/^[\\/]/.test(trimmed) &&
-    !trimmed.split(/[\\/]/).some((part) => part === '..' || part === '.')
-  );
 }
 
 export function makeDrafts(topic: string, scope: string[]): Feature[] {

@@ -181,7 +181,7 @@ export function ConnectionPage({
   providers: Provider[];
   onToggleProvider: (value: Provider) => void;
   protection: ProtectionDraft;
-  onProtection: (draft: ProtectionDraft) => void;
+  onProtection: (draft: ProtectionDraft) => Promise<string>;
   onNext: () => void;
   onBack: () => void;
   onOpenAI: () => void;
@@ -272,7 +272,11 @@ export function ConnectionPage({
             고급 보호 설정
             <Icon name="down" size={16} />
           </summary>
-          <ProtectionEditor draft={protection} onSave={onProtection} />
+          <ProtectionEditor
+            actualProject={actualProject}
+            draft={protection}
+            onSave={onProtection}
+          />
         </details>
       </div>
       <Notice>

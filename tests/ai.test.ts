@@ -95,6 +95,7 @@ test('AI 응답에 들어간 상태 문자열을 실행 설정으로 해석하�
     '12345678-1234-4234-8234-123456789012',
   );
   assert.throws(() => readCodexHeader(header.replace('read-only', 'danger-full-access'), cwd));
+  assert.throws(() => readCodexHeader(header, `${cwd}-다른폴더`), /HEADER_CONFIG_MISMATCH/);
   assert.throws(() => readCodexHeader(`user\n${header}`, cwd));
   assert.equal(readCodexHeader('codex\nturn interrupted\nERROR:', cwd), null);
   assert.equal(readCodexHeader(header.replace(CODEX_VERSION, '0.0.0'), cwd), null);

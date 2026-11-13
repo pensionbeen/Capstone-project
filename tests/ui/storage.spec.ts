@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 import { _electron, type ElectronApplication, expect, type Page, test } from '@playwright/test';
@@ -10,6 +11,7 @@ let app: ElectronApplication;
 let page: Page;
 let profile: string;
 let folder: string;
+let protectionTestRoot: string | undefined;
 const env = Object.fromEntries(
   Object.entries(process.env).filter(
     ([key, value]) => key !== 'ELECTRON_RUN_AS_NODE' && value !== undefined,
@@ -17,7 +19,10 @@ const env = Object.fromEntries(
 ) as Record<string, string>;
 
 async function launch() {
-  app = await _electron.launch({ args: ['.', `--user-data-dir=${profile}`], env });
+  app = await _electron.launch({
+    args: ['.', `--user-data-dir=${profile}`],
+    env: protectionTestRoot ? { ...env, OPENAI_BASE_URL: 'http://127.0.0.1:1' } : env,
+  });
   page = await app.firstWindow();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(
     '어떤 프로젝트를 만들어 볼까요?',
@@ -40,14 +45,64 @@ async function catalog() {
   });
 }
 test.beforeEach(async () => {
-  const root = resolve('.runtime', `storage-ui-${randomUUID()}`);
+  protectionTestRoot = test.info().title.startsWith('보호 요청을 저장한 실제 앱')
+    ? await mkdtemp(join(tmpdir(), 'orbit-protection-ui-'))
+    : undefined;
+  const root = protectionTestRoot ?? resolve('.runtime', `storage-ui-${randomUUID()}`);
   profile = join(root, 'profile');
   folder = join(root, '한글 공백 프로젝트');
   await mkdir(folder, { recursive: true });
   await launch();
 });
 test.afterEach(async () => {
-  await app?.close();
+  try {
+    await app?.close();
+  } finally {
+    if (protectionTestRoot) {
+      const target = await realpath(protectionTestRoot);
+      expect(dirname(target)).toBe(await realpath(tmpdir()));
+      expect(basename(target)).toMatch(/^orbit-protection-ui-[A-Za-z0-9]+$/);
+      await rm(target, { recursive: true, maxRetries: 5, retryDelay: 100 });
+      await expect(access(target)).rejects.toMatchObject({ code: 'ENOENT' });
+      protectionTestRoot = undefined;
+    }
+  }
+});
+
+test('보호 요청을 저장한 실제 앱은 Codex 실행과 로그인 확인을 보류하고 재시작 뒤에도 이유를 표시한다', async () => {
+  await select();
+  await writeFile(join(folder, '가짜 파일.txt'), randomUUID());
+  await page.getByRole('button', { name: '이 프로젝트로 시작' }).click();
+  await page.getByText('고급 보호 설정', { exact: true }).click();
+  await page.getByLabel('보호할 파일·폴더').fill('가짜 파일.txt');
+  await page.getByRole('button', { name: '보호 요청 저장' }).click();
+  await expect(page.locator('#main > [role=status]')).toContainText('모든 Codex 실행을 보류');
+  const id = (await catalog()).activeProjectId;
+  if (!id) throw new Error('Missing selected project');
+  const evidence = await page.evaluate(async (projectId) => {
+    const desktop = window.desktop;
+    if (!desktop) throw new Error('Missing desktop bridge');
+    return {
+      login: await desktop.inspectAI(),
+      submit: await desktop.sendAIPrompt(projectId, '시작 확인', null, null),
+      state: await desktop.readAIStatus(projectId),
+    };
+  }, id);
+  expect(evidence.login.status).toBe('error');
+  expect(evidence.login.message).toContain('모든 Codex 실행을 보류');
+  expect(evidence.submit.ok).toBe(false);
+  expect(evidence.submit.message).toContain('모든 Codex 실행을 보류');
+  expect(evidence.state.id).toBeNull();
+  await app.close();
+  await launch();
+  await expect(page.locator('#main > [role=status]')).toContainText(folder);
+  await page.getByRole('button', { name: '이 프로젝트로 시작' }).click();
+  await page.getByText('고급 보호 설정', { exact: true }).click();
+  await expect(page.getByLabel('보호할 파일·폴더')).toHaveValue('가짜 파일.txt');
+  await page.getByLabel('보호할 파일·폴더').fill('');
+  await page.getByRole('button', { name: '보호 요청 저장' }).click();
+  await expect(page.locator('#main > [role=status]')).toHaveCount(0);
+  expect((await catalog()).launchHold).toBeUndefined();
 });
 
 test('실제 앱 재시작 뒤 이름·폴더·ID·선택 복원, AI 자동 실행 없음', async () => {

@@ -5,9 +5,11 @@ import { Button, Icon } from './ui';
 export function ProtectionEditor({
   draft,
   onSave,
+  actualProject,
 }: {
   draft: ProtectionDraft;
-  onSave: (value: ProtectionDraft) => void;
+  onSave: (value: ProtectionDraft) => Promise<string>;
+  actualProject: boolean;
 }) {
   const inputId = useId();
   const [paths, setPaths] = useState(draft.paths.join('\n'));
@@ -17,7 +19,8 @@ export function ProtectionEditor({
     remove: draft.remove,
   });
   const [message, setMessage] = useState('');
-  function save() {
+  const [saving, setSaving] = useState(false);
+  async function save() {
     const values = [
       ...new Set(
         paths
@@ -32,8 +35,18 @@ export function ProtectionEditor({
       );
       return;
     }
-    onSave({ paths: values, ...flags });
-    setMessage('이 창에 설정안을 저장했어요. 실제 보호는 아직 적용되지 않았어요.');
+    if (actualProject && values.length && !flags.read && !flags.write && !flags.remove) {
+      setMessage(
+        '제한할 동작을 선택해 주세요. 보호 요청을 해제하려면 경로를 비우고 저장해 주세요.',
+      );
+      return;
+    }
+    setSaving(true);
+    try {
+      setMessage(await onSave({ paths: values, ...flags }));
+    } finally {
+      setSaving(false);
+    }
   }
   return (
     <div className="protection-editor">
@@ -54,6 +67,8 @@ export function ProtectionEditor({
       />
       <p id={`${inputId}-hint`} className="field-hint">
         프로젝트 폴더를 기준으로 한 줄에 하나씩 입력해 주세요.
+        {actualProject &&
+          ' 경로를 저장하면 ORBIT에서 실행 중인 Codex와 로그인 확인을 중단하고 새 실행을 보류해요. 해제하려면 경로를 비우고 저장해 주세요.'}
       </p>
       <fieldset className="inline-checks">
         <legend>제한할 동작</legend>
@@ -72,8 +87,8 @@ export function ProtectionEditor({
         ))}
       </fieldset>
       <div className="form-actions">
-        <Button variant="secondary" onClick={save}>
-          설정안 저장
+        <Button variant="secondary" onClick={save} disabled={saving}>
+          {actualProject ? '보호 요청 저장' : '설정안 저장'}
         </Button>
         <span className="subtle-label">
           <Icon name="lock" size={14} /> 적용 전

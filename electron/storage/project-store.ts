@@ -11,6 +11,7 @@ import {
   realpathSync,
   statSync,
   unlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { basename, isAbsolute, join, normalize, parse } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -20,6 +21,7 @@ import {
   validateFeaturePlan,
 } from '../../shared/feature-plan.js';
 import { validFeaturePlanTransition } from '../../shared/feature-plan-transition.js';
+import { type ProtectionDraft, validProtection } from '../../shared/protection.js';
 import type { ProjectBackup, ProjectCatalog, SavedProject } from '../../shared/storage.js';
 import { UUID } from '../ai/contracts.js';
 import {
@@ -31,7 +33,7 @@ import {
 } from './feature-plan-store.js';
 
 const APP_ID = 0x4f524254;
-const VERSION = 3;
+const VERSION = 4;
 const MAX_PROJECTS = 100;
 const MAX_BACKUPS = 20;
 const MAX_DB_BYTES = 16 * 1024 * 1024;
@@ -49,6 +51,17 @@ const TABLES = {
   ) STRICT`,
 };
 const sqlShape = (sql: string) => sql.replace(/\s+/g, ' ').trim();
+const PROTECTION_TABLE = `CREATE TABLE protection_requests (
+  project_id TEXT PRIMARY KEY NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  draft TEXT NOT NULL CHECK(length(draft) BETWEEN 1 AND 16384)
+) STRICT`;
+
+function readProtection(value: unknown) {
+  const draft = JSON.parse(String(value)) as unknown;
+  if (!validProtection(draft) || draft.paths.length === 0)
+    throw new StorageError('저장된 보호 요청을 확인할 수 없어요.');
+  return draft;
+}
 export class StorageError extends Error {}
 
 export function validProjectName(value: unknown): value is string {
@@ -87,7 +100,7 @@ function readSnapshot(db: DatabaseSync) {
   const version = db.prepare('PRAGMA user_version').get()?.user_version;
   if (
     db.prepare('PRAGMA application_id').get()?.application_id !== APP_ID ||
-    (version !== VERSION && version !== 2 && version !== 1)
+    (version !== VERSION && version !== 3 && version !== 2 && version !== 1)
   )
     throw new StorageError('지원하는 ORBIT 저장 버전이 아니에요. 원본을 보존했어요.');
   const schema = db
@@ -100,7 +113,12 @@ function readSnapshot(db: DatabaseSync) {
       ? TABLES
       : version === 2
         ? { ...TABLES, ...FEATURE_TABLES }
-        : { ...TABLES, ...FEATURE_TABLES, ...PATH_TABLES };
+        : {
+            ...TABLES,
+            ...FEATURE_TABLES,
+            ...PATH_TABLES,
+            ...(version === VERSION ? { protection_requests: PROTECTION_TABLE } : {}),
+          };
   if (
     schema.length !== Object.keys(expectedTables).length ||
     schema.some(
@@ -150,12 +168,20 @@ function readSnapshot(db: DatabaseSync) {
   const projectIds = rows.map((p) => String(p.id));
   const featurePlans =
     version !== 1
-      ? readAllFeaturePlans(db, projectIds, version === VERSION)
+      ? readAllFeaturePlans(db, projectIds, version >= 3)
       : Object.fromEntries(projectIds.map((id) => [id, emptyFeaturePlan()]));
   const snapshot = {
     projects: rows.map((row) => ({ ...row })) as unknown as SavedProject[],
     activeProjectId: state.activeProjectId as string | null,
     featurePlans,
+    protection: new Map<string, ProtectionDraft>(
+      version === VERSION
+        ? db
+            .prepare('SELECT project_id, draft FROM protection_requests')
+            .all()
+            .map((row) => [String(row.project_id), readProtection(row.draft)])
+        : [],
+    ),
   };
   if (
     Buffer.byteLength(
@@ -174,6 +200,7 @@ export class ProjectStore {
   private db: DatabaseSync;
   private readonly backupDirectory: string;
   private closed = false;
+  private unsavedProtection = new Set<string>();
   private snapshot!: ReturnType<typeof readSnapshot>;
 
   constructor(readonly directory: string) {
@@ -204,6 +231,7 @@ export class ProjectStore {
         this.transaction(() => {
           for (const sql of Object.values({ ...TABLES, ...FEATURE_TABLES, ...PATH_TABLES }))
             this.db.exec(sql);
+          this.db.exec(PROTECTION_TABLE);
           this.db.exec(
             `INSERT INTO app_state(id, active_project_id) VALUES (1, NULL); PRAGMA application_id=${APP_ID}; PRAGMA user_version=${VERSION}`,
           );
@@ -213,7 +241,8 @@ export class ProjectStore {
         this.backup();
         this.transaction(() => {
           if (version === 1) for (const sql of Object.values(FEATURE_TABLES)) this.db.exec(sql);
-          for (const sql of Object.values(PATH_TABLES)) this.db.exec(sql);
+          if (version < 3) for (const sql of Object.values(PATH_TABLES)) this.db.exec(sql);
+          this.db.exec(PROTECTION_TABLE);
           this.db.exec(`PRAGMA user_version=${VERSION}`);
         });
       }
@@ -284,11 +313,87 @@ export class ProjectStore {
     });
   }
   catalog(): ProjectCatalog {
+    const hold = this.blockingRequest();
     return {
-      projects: this.snapshot.projects.map((p) => ({ ...p })),
+      projects: this.snapshot.projects.map((p) =>
+        p.id === this.snapshot.activeProjectId ? this.project(p.id) : { ...p },
+      ),
+      ...(hold ? { launchHold: hold.message, heldProjectId: hold.id } : {}),
       activeProjectId: this.snapshot.activeProjectId,
       storage: 'sqlite',
     };
+  }
+  launchHold(): string | null {
+    return this.blockingRequest()?.message ?? null;
+  }
+  private blockingRequest() {
+    const pending = this.pendingProtection();
+    if (pending) {
+      const project = this.db.prepare('SELECT path FROM projects WHERE id = ?').get(pending);
+      return {
+        id: pending,
+        message: `보호 요청 저장을 확인하지 못해 모든 Codex 실행을 보류했어요. 프로젝트를 선택해 보호 요청을 다시 저장해 주세요: ${project?.path ?? '(프로젝트 확인 필요)'}`,
+      };
+    }
+    // An orphaned request must still hold every launch if the database is damaged.
+    const row = this.db
+      .prepare(
+        'SELECT r.project_id, p.path FROM protection_requests r LEFT JOIN projects p ON p.id = r.project_id ORDER BY r.project_id LIMIT 1',
+      )
+      .get();
+    return row
+      ? {
+          id: String(row.project_id),
+          message: `파일 접근 차단을 검증하지 못해 ORBIT의 모든 Codex 실행을 보류했어요. 다른 프로젝트에서도 이 폴더에 접근할 수 있어요. 보호 요청을 변경할 프로젝트: ${row.path ?? '(확인 불가)'}`,
+        }
+      : null;
+  }
+  private pendingProtection(): string | null {
+    const marker = readdirSync(this.directory).find(
+      (name) => name.startsWith('protection-') && name.endsWith('.pending'),
+    );
+    if (!marker) return this.unsavedProtection.values().next().value ?? null;
+    const id = marker.slice('protection-'.length, -'.pending'.length);
+    if (!UUID.test(id)) throw new StorageError('보호 요청 저장 기록을 확인할 수 없어요.');
+    return id;
+  }
+  saveProtection(projectId: string, draft: unknown, confirmedInactiveClear = false) {
+    if (!UUID.test(projectId) || !validProtection(draft))
+      throw new StorageError(
+        '보호 경로와 제한할 동작을 확인해 주세요. 해제하려면 경로를 비우고 저장해 주세요.',
+      );
+    if (
+      this.snapshot.activeProjectId !== projectId &&
+      !(
+        confirmedInactiveClear &&
+        draft.paths.length === 0 &&
+        this.blockingRequest()?.id === projectId
+      )
+    )
+      throw new StorageError('현재 선택한 프로젝트의 보호 요청만 변경할 수 있어요.');
+    this.unsavedProtection.add(projectId);
+    // The empty marker's name is the full journal entry. Failure to create it still holds this process.
+    const journal = join(this.directory, `protection-${projectId}.pending`);
+    try {
+      if (!existsSync(journal)) writeFileSync(journal, '', { flag: 'wx', flush: true });
+    } catch {
+      throw new StorageError(
+        '보호 요청 표식을 저장하지 못했어요. 현재 앱에서 Codex 실행을 보류했어요. 재시작 후에는 보류를 보장할 수 없어 앱을 닫기 전에 다시 저장해 주세요.',
+      );
+    }
+    this.transaction(() => {
+      if (draft.paths.length === 0) {
+        this.db.prepare('DELETE FROM protection_requests WHERE project_id = ?').run(projectId);
+      } else {
+        this.db
+          .prepare(
+            'INSERT INTO protection_requests(project_id, draft) VALUES (?, ?) ON CONFLICT(project_id) DO UPDATE SET draft=excluded.draft',
+          )
+          .run(projectId, JSON.stringify(draft));
+      }
+    });
+    unlinkSync(journal);
+    this.unsavedProtection.delete(projectId);
   }
   register(path: string, activate = false) {
     const canonical = normalize(realpathSync.native(path));
@@ -331,7 +436,13 @@ export class ProjectStore {
       )
       .get(id);
     if (!row) throw new StorageError('저장된 프로젝트를 찾지 못했어요.');
-    return row as unknown as SavedProject;
+    const request = this.db
+      .prepare('SELECT draft FROM protection_requests WHERE project_id = ?')
+      .get(id);
+    return {
+      ...row,
+      ...(request ? { protection: readProtection(request.draft) } : {}),
+    } as unknown as SavedProject;
   }
   activate(id: string, name?: string) {
     if (!UUID.test(id) || (name !== undefined && !validProjectName(name)))
@@ -398,6 +509,8 @@ export class ProjectStore {
     return { id, createdAt };
   }
   restore(id: string) {
+    if (this.pendingProtection())
+      throw new StorageError('보호 요청 저장을 마친 뒤 백업을 복원해 주세요.');
     if (!UUID.test(id)) throw new StorageError('백업을 다시 선택해 주세요.');
     const entry = this.backups().find((item) => item.id === id);
     if (!entry) throw new StorageError('백업을 찾지 못했어요.');
@@ -411,6 +524,22 @@ export class ProjectStore {
       source.exec('COMMIT');
     } finally {
       source.close();
+    }
+    // Restoring an older snapshot must not silently remove a current hold.
+    for (const [projectId, active] of this.snapshot.protection) {
+      const restored = snapshot.protection.get(projectId);
+      const currentPath = this.project(projectId).path;
+      if (
+        !restored ||
+        !snapshot.projects.some((p) => p.id === projectId && p.path === currentPath) ||
+        active.paths.some((path) => !restored.paths.includes(path)) ||
+        (active.read && !restored.read) ||
+        (active.write && !restored.write) ||
+        (active.remove && !restored.remove)
+      )
+        throw new StorageError(
+          '백업을 복원하면 현재 보호 요청이 사라져 복원을 보류했어요. 보호 정책 화면에서 요청을 먼저 확인해 주세요.',
+        );
     }
     // Fully validated rows are in memory; never reopen a source after validating it.
     this.backup();
@@ -426,6 +555,11 @@ export class ProjectStore {
         const plan = snapshot.featurePlans[p.id] ?? emptyFeaturePlan();
         if (this.schemaVersion() === VERSION) writeFeaturePlan(this.db, p.id, plan);
       }
+      const insertProtection = this.db.prepare(
+        'INSERT INTO protection_requests(project_id, draft) VALUES (?, ?)',
+      );
+      for (const [projectId, draft] of snapshot.protection)
+        insertProtection.run(projectId, JSON.stringify(draft));
       this.db
         .prepare('UPDATE app_state SET active_project_id = ? WHERE id = 1')
         .run(snapshot.activeProjectId);

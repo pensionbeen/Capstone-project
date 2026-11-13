@@ -7,6 +7,7 @@ import {
   type ProjectFeaturePlan,
   validateFeaturePlan,
 } from '../shared/feature-plan';
+import { emptyProtection, type ProtectionDraft } from '../shared/protection';
 import type { RequirementsDraft } from '../shared/requirements';
 import type { ProjectCatalog } from '../shared/storage';
 import { canRecordVerification, nextVerificationTime } from '../shared/verification';
@@ -83,7 +84,10 @@ export default function App() {
   const [inWorkspace, setInWorkspace] = useState(false);
   const [view, setView] = useState<View>('overview');
   const [providers, setProviders] = useState<Provider[]>(['Codex']);
-  const [protection, setProtection] = useState(initialProtection);
+  const [sampleProtection, setSampleProtection] = useState(initialProtection);
+  const protection = project?.desktopId
+    ? (catalog.projects.find((p) => p.id === project.desktopId)?.protection ?? emptyProtection)
+    : sampleProtection;
   const [analysis, setAnalysis] = useState(emptyAnalysis);
   const [requirements, setRequirements] = useState<RequirementsDraft>({ goal: '', answer: '' });
   const [requirementsBusy, setRequirementsBusy] = useState(false);
@@ -315,12 +319,41 @@ export default function App() {
     setVerifyFeature(null);
     setDeleting(null);
     setActivities([]);
-    setProtection(initialProtection);
+    setSampleProtection(initialProtection);
     setProviders(['Codex']);
     setStep(0);
     setInWorkspace(false);
     setView('overview');
     if (value) addActivity('settings', '프로젝트 선택', `${value.name}의 화면 흐름을 시작했어요.`);
+  }
+  async function saveProtection(draft: ProtectionDraft) {
+    if (!project?.desktopId || project.sample) {
+      setSampleProtection(draft);
+      return '이 창에 설정안을 저장했어요. 실제 보호는 아직 적용되지 않았어요.';
+    }
+    if (!window.desktop) return '로컬 제어부에 연결할 수 없어 보호 요청을 저장하지 못했어요.';
+    return persistProtection(project.desktopId, draft);
+  }
+  async function persistProtection(id: string, draft: ProtectionDraft) {
+    try {
+      if (!window.desktop) return '로컬 제어부에 연결할 수 없어요.';
+      const result = await window.desktop.saveProtection(id, draft);
+      if (!result.ok && result.launchHold)
+        setCatalog((previous) => ({ ...previous, launchHold: result.launchHold }));
+      if (result.ok && result.catalog) {
+        setCatalog(result.catalog);
+        addActivity(
+          'settings',
+          '보호 요청 변경',
+          draft.paths.length
+            ? `${draft.paths.length}개 경로를 지정했어요.`
+            : '보호 경로를 해제했어요.',
+        );
+      }
+      return result.message;
+    } catch {
+      return '저장 결과를 확인할 수 없어요. 보호 정책을 다시 열어 저장된 요청을 확인해 주세요.';
+    }
   }
   async function applyProject(value: Project) {
     if (projectSaving || planSaveLock.current) return;
@@ -686,6 +719,22 @@ export default function App() {
           </div>
         </header>
         <main id="main" className="main-content">
+          {catalog.launchHold && (
+            <p className="form-message" role="status">
+              {catalog.launchHold}
+              {catalog.heldProjectId && catalog.heldProjectId !== desktopProjectId && (
+                <Button
+                  variant="secondary"
+                  onClick={async () => {
+                    if (catalog.heldProjectId)
+                      setToast(await persistProtection(catalog.heldProjectId, emptyProtection));
+                  }}
+                >
+                  이 프로젝트의 보호 요청 해제
+                </Button>
+              )}
+            </p>
+          )}
           <div
             data-page={pageKey}
             className={`page-container ${inWorkspace ? 'dashboard-container' : ''}`}
@@ -740,14 +789,7 @@ export default function App() {
                     );
                   }}
                   protection={protection}
-                  onProtection={(draft) => {
-                    setProtection(draft);
-                    addActivity(
-                      'settings',
-                      '보호 설정안 저장',
-                      '실제 보호 적용 전의 설정안을 수정했어요.',
-                    );
-                  }}
+                  onProtection={saveProtection}
                   onBack={() => setStep(0)}
                   onNext={() => {
                     if (providers.length === 0) return;
@@ -868,14 +910,8 @@ export default function App() {
               <ProtectionPage
                 draft={protection}
                 providers={providers}
-                onSave={(draft) => {
-                  setProtection(draft);
-                  addActivity(
-                    'settings',
-                    '보호 설정안 수정',
-                    `${draft.paths.length}개 경로를 지정했어요. 실제 보호는 적용 전이에요.`,
-                  );
-                }}
+                actualProject={Boolean(project?.desktopId)}
+                onSave={saveProtection}
               />
             )}
             {inWorkspace && view === 'transfer' && <TransferPage />}

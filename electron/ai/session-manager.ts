@@ -14,6 +14,7 @@ import {
   validFeatureSessionInput,
 } from '../../shared/feature-session.js';
 import type { LocalProject } from '../../shared/local-api.js';
+import { protectionUnavailable } from '../../shared/protection.js';
 import {
   type RequirementsAction,
   requirementsPrompt,
@@ -50,6 +51,8 @@ interface Driver {
   inspectHeader: boolean;
 }
 interface Dependencies {
+  inspect?: typeof inspectCodex;
+  launchHold?: () => string | null;
   // Synchronous trusted DB read lets us recheck immediately before committing a turn.
   loadFeature?: (projectId: string, featureId: string) => StoredFeature | undefined;
   checkFeaturePaths?: typeof checkFeaturePaths;
@@ -63,6 +66,7 @@ interface Dependencies {
   hostExecutable?: string;
 }
 const messages: Record<string, string> = {
+  PROTECTION_UNVERIFIED: protectionUnavailable,
   OUTPUT_LIMIT: '출력 한도를 넘어 실행을 중단했어요. 요청을 작게 나누어 주세요.',
   HEADER_CONFIG_MISMATCH: '요청한 Codex 실행 설정과 실제 표시가 달라 실행을 중단했어요.',
   HEADER_UNCONFIRMED: 'Codex 실행 설정을 확인하지 못해 실행을 중단했어요.',
@@ -107,6 +111,13 @@ export class SessionManager {
   constructor(dependencies: Dependencies = {}) {
     this.dependencies = dependencies;
   }
+  launchHold() {
+    try {
+      return this.dependencies.launchHold?.() ?? null;
+    } catch {
+      return protectionUnavailable;
+    }
+  }
   get busy() {
     return Boolean(this.pendingFeature) || activeAIStates.includes(this.state.state);
   }
@@ -125,6 +136,16 @@ export class SessionManager {
 
   get canChangeProjects() {
     return !this.busy && !this.shutdownRequested && this.state.cleanupConfirmed;
+  }
+  get canChangeProtection() {
+    return this.canChangeProjects && !this.availabilityPending;
+  }
+  async stopForProtection() {
+    this.availabilityAbort?.abort();
+    if (this.pendingFeature) this.pendingFeature.cancelled = true;
+    if (this.projectId && activeAIStates.includes(this.state.state)) this.stop(this.projectId);
+    await Promise.all([this.availability, this.featurePreparation, this.lifetime]);
+    return this.state.cleanupConfirmed;
   }
   replaceProjects(projects: LocalProject[], resetSession = false) {
     if (!this.canChangeProjects) return false;
@@ -151,6 +172,8 @@ export class SessionManager {
     return id;
   }
   availabilityStatus() {
+    const hold = this.launchHold();
+    if (hold) return Promise.resolve({ status: 'error' as const, message: hold });
     if (this.probeCleanupUnconfirmed)
       return Promise.resolve({
         status: 'error' as const,
@@ -163,7 +186,7 @@ export class SessionManager {
       this.lastStatus = Date.now();
       this.availabilityPending = true;
       this.availabilityAbort = new AbortController();
-      this.availability = inspectCodex(this.availabilityAbort.signal)
+      this.availability = (this.dependencies.inspect ?? inspectCodex)(this.availabilityAbort.signal)
         .then((result) => {
           if (result.cleanupUnconfirmed) {
             this.probeCleanupUnconfirmed = true;
@@ -204,6 +227,8 @@ export class SessionManager {
     };
   }
   submit(projectId: string, prompt: string): AIReply {
+    const hold = this.launchHold();
+    if (hold) return rejected(hold);
     if (this.projectId === projectId && this.state.purpose !== 'chat')
       return rejected('현재 대화에 연결된 화면에서 답변하거나 새 일반 대화를 시작해 주세요.');
     return this.startTurn(projectId, prompt, 'chat', null, false);
@@ -217,6 +242,8 @@ export class SessionManager {
     expectedOutputId: string | null,
     expectedRunId: string | null,
   ): Promise<AIReply> {
+    const hold = this.launchHold();
+    if (hold) return Promise.resolve(rejected(hold));
     if (
       typeof projectId !== 'string' ||
       !UUID.test(projectId) ||
@@ -332,6 +359,8 @@ export class SessionManager {
     }
   }
   requirements(projectId: string, action: RequirementsAction, input: string): AIReply {
+    const hold = this.launchHold();
+    if (hold) return rejected(hold);
     if (!validRequirementsInput(action, input))
       return rejected('목표는 1~2,000자, 답변·정정은 1~6,000자로 입력해 주세요.');
     if (action === 'answer' && !this.state.requirementsGoalConfirmed)
@@ -359,6 +388,8 @@ export class SessionManager {
       : reply;
   }
   generate(projectId: string): AIReply {
+    const hold = this.launchHold();
+    if (hold) return rejected(hold);
     if (
       this.projectId !== projectId ||
       this.state.purpose !== 'requirements' ||
@@ -527,6 +558,7 @@ export class SessionManager {
         if (this.stopRequested) return;
         this.featureStillCurrent(projectId, cwd, featureContext);
       }
+      if (this.launchHold()) throw new Error('PROTECTION_UNVERIFIED');
       host = spawn(
         this.dependencies.hostExecutable ?? process.execPath,
         [fileURLToPath(new URL('./pty-host.js', import.meta.url))],
@@ -615,6 +647,7 @@ export class SessionManager {
             if (this.stopRequested) continue;
             this.featureStillCurrent(projectId, cwd, featureContext);
           }
+          if (this.launchHold()) throw new Error('PROTECTION_UNVERIFIED');
           started = true;
           this.send({ type: 'start', ...driver, cwd, cols: this.cols, rows: this.rows });
         }

@@ -11,6 +11,7 @@ const desktop: DesktopBridge = {
   listProjects: () => ipcRenderer.invoke('project:list'),
   activateProject: (id) => ipcRenderer.invoke('project:activate', id),
   saveProjectName: (id, name) => ipcRenderer.invoke('project:save-name', id, name),
+  saveProtection: (id, draft) => ipcRenderer.invoke('project:save-protection', id, draft),
   loadFeaturePlan: (id) => ipcRenderer.invoke('features:load', id),
   saveFeaturePlan: (id, plan) => ipcRenderer.invoke('features:save', id, plan),
   listProjectFiles: (id, path) => ipcRenderer.invoke('files:list', id, path),

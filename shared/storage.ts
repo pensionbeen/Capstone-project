@@ -10,6 +10,8 @@ export interface ProjectCatalog {
   activeProjectId: string | null;
   storage: 'memory' | 'sqlite' | 'unavailable';
   message?: string;
+  launchHold?: string;
+  heldProjectId?: string;
 }
 export interface ProjectBackup {
   id: string;
@@ -20,7 +22,7 @@ export type ProjectResult =
   | { ok: false; message: string };
 export type StorageResult =
   | { ok: true; message: string; catalog?: ProjectCatalog }
-  | { ok: false; message: string };
+  | { ok: false; message: string; launchHold?: string };
 export type FeaturePlanResult =
   | { ok: true; plan: ProjectFeaturePlan }
   | { ok: false; message: string };

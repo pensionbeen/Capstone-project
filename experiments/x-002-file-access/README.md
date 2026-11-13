@@ -1,5 +1,19 @@
 # X-002 파일 접근 보호 실험
 
+## 인증서·VM 없는 호스트 읽기 시험
+
+비관리자 PowerShell에서 독립 개발 사본의 루트를 열고 다음 명령을 실행한다. 이 사본에는 ORBIT의 Electron 빌드가 준비되어 있다. 다른 사본에서는 먼저 프로젝트 의존성을 준비하고 `npm.cmd run build:electron`을 실행해야 한다. Python 3, Node, Windows MXC를 지원하는 Codex와 Windows가 필요하다. [Codex Windows 샌드박스 문서](https://learn.chatgpt.com/docs/windows/windows-sandbox)
+
+```powershell
+python -B experiments/x-002-file-access/run-mxc.py
+```
+
+시험은 ORBIT가 선택하는 설치 CLI와 Windows 기본 `certutil -hashfile`을 사용한다. 같은 읽기를 일반 사용자, MXC가 직접 실행한 certutil, MXC의 cmd가 실행한 certutil, 다시 일반 사용자 순으로 대조한다. 각 방식에서 새 폴더에 서로 다른 무작위 파일 두 개를 만들고 존재하지 않는 이름도 비교한다. 비교용 값과 해시는 로컬 메모리에서만 사용한다. CLI에 모델 요청을 보내지 않는다.
+
+첫 번째 방식은 MXC 정책에서 보호 파일의 상대 경로를 거부한다. 두 번째 방식은 호스트가 만든 가짜 보호 파일에만 Windows의 중간 무결성 레이블과 읽기·쓰기 금지 규칙을 붙이고, 이름을 숨기는 정책 없이 시험한다. 두 방식의 결과는 별도로 출력한다. 보호 읽기는 파일을 연 유틸리티의 오류와 종료 코드가 모두 `0x80070005`여야 통과한다. 이 PC에서 두 방식 모두 읽기 기준에 실패해 명령 종료 코드는 1이었다. [관측값과 복원 결과](../../docs/work-log/2026-11-09.md#호스트에서-인증서vm-없이-실행한-읽기-시험)
+
+## 기존 제한 토큰 시험
+
 이 도구는 현재 Windows의 **일반 사용자 토큰과 그 제한 사본**으로 새 가짜 파일에 접근하여 Win32 결과를 수집한다. 앱 보호 기능·실제 Codex 실행기·완성된 보안 격리가 아니다. 조사 결과는 [RESULTS.md](RESULTS.md)에 기록한다. X-002 전체 성공 및 T-014 착수 조건은 충족했다고 표시하지 않는다.
 
 **2026-10-12 실제 결과:** 사용자 읽기·쓰기·삭제 및 정책 실패 시 실행 차단·복구는 확인했다. 제한 프로세스는 초기화 오류 `0xC0000142`로 본문을 실행하지 못했고, 별도 desktop을 준비한 마지막 버전은 Windows 응용 프로그램 제어 정책이 controller 실행 자체를 차단했다. 이 PC에서 정상 행렬의 실행 가능성은 확인되지 않았다. 차단 뒤 다른 경로·이름·컴파일 옵션으로 재실행하거나 정책을 완화하지 않았다. 아래 명령은 재현 인터페이스이며 지금 전체 통과할 것이라는 안내가 아니다.
@@ -8,40 +22,45 @@
 
 실행 전에 알아둘 파일명은 **`FileAccessProbe.exe`**다. [FileAccessProbe.cs](FileAccessProbe.cs)를 이 PC에 이미 설치된 Microsoft C# 컴파일러로 직접 컴파일한 테스트 프로그램이며, 설치 프로그램이나 외부에서 받은 실행 파일이 아니다. 가짜 파일의 접근 결과만 측정하기 위해 만든 미서명 도구다. 마지막 파일을 읽기 전용 `Get-AuthenticodeSignature`로 확인한 결과 `NotSigned`, 서명 인증서 없음이었다. Windows가 이 파일을 차단하면 즉시 중단하며, 예외 추가·`Unblock-File`·보안 설정 변경·이름/위치 변경 재실행을 하지 않는다.
 
-## 실행
+## 현재 실행 방법 · 2026-11-09
 
-일반 사용자 PowerShell에서 저장소 루트를 작업 경로로 사용한다. 관리자 실행·전역 권한 변경·추가 설치는 필요하지 않으며, 관리자 또는 이미 제한된 토큰에서는 본 실험을 거절한다. 설치된 .NET Framework C# 컴파일러가 없으면 중단한다.
+개발 사본의 루트에서 **로그인한 Windows 사용자의 비관리자 PowerShell**로 실행한다. 실행할 때마다 `%TEMP%\ORBIT-X002\run-시각-UUID`를 만들고, 보고서 경로를 터미널에 출력한다.
 
 ```powershell
 powershell.exe -NoProfile -File experiments\x-002-file-access\run.ps1
+node --test experiments/x-002-file-access/verify-report.test.mjs
 ```
 
-실행마다 `.runtime/x-002-file-access/run-시각-UUID/`를 새로 만든다. 하위 `fixtures`만 권한을 바꾸고 정리한다. 출력한 경로의 `report.json`에는 실제 API 결과·오류 번호, 토큰 SID·PID·시작 시각, 보호 파일 해시, Job 종료와 복원·정리 결과가 남는다. `environment.json`은 실제 Windows 버전을 저장한다. .NET의 `Environment.OSVersion` 값은 호환성 표시일 수 있어 별도 필드로 구분한다.
+현재 PC에서는 Smart App Control이 On이다. 서명본이 없는 기본 실행은 별도 사용자 대조군의 `allowed.txt`와 `protected.txt`를 읽고 지운다. `preflight.json`의 `allowedMatches`, `protectedMatches`, `distinct`, `cleaned`를 확인한다. 종료 코드 3은 컨트롤러를 시작하기 전에 보류했다는 뜻이다. 정책 상태를 조회할 수 없을 때에도 보류한다. 순수 Node 테스트는 합성 보고서 판정만 검사한다.
+
+현재 소스로 만든, Windows가 신뢰하는 서명본과 그 **서명된 최종 산출물의 독립 검토 SHA-256**이 준비된 경우 다음 인터페이스를 쓴다. 이 PC에서는 서명본 실행까지 검증하지 못했다. 별도 Windows 게스트를 사용한다면 기존 보안 설정을 유지하고 해당 환경의 결과로 기록한다.
 
 ```powershell
-node experiments/x-002-file-access/verify-report.mjs '.runtime/x-002-file-access/run-실제이름/report.json'
-powershell.exe -NoProfile -File experiments\x-002-file-access\run.ps1 -InjectPolicyFailure
-node experiments/x-002-file-access/verify-report.mjs --policy-failure '.runtime/x-002-file-access/run-실제이름/report.json'
-node experiments/x-002-file-access/verify-report.mjs --initialization-failure '.runtime/x-002-file-access/run-실제이름/report.json'
+powershell.exe -NoProfile -File experiments\x-002-file-access\run.ps1 -SignedControllerPath 'C:\검토한경로\FileAccessProbe.exe' -ReviewedControllerSha256 '<서명본 해시 64자리>'
+node experiments/x-002-file-access/verify-report.mjs '<출력된 report.json 절대경로>'
+powershell.exe -NoProfile -File experiments\x-002-file-access\test-preflight.ps1
 ```
 
-정책 실패 주입은 새 시험 폴더의 **없는 가짜 파일**에 DACL 설정을 시도한다. 실제 파일 없음 오류 뒤 제한 토큰·프로세스를 만들지 않는지 검사한다. 실패 실험의 helper 종료 코드는 2이고, 관측 결과 검증기의 정상 종료 코드는 0이다. 정상 행렬의 helper 종료 코드 0도 제품 보호 승인을 뜻하지 않는다. 전체 행렬 검증기는 앞으로 본문 실행이 가능해졌을 때의 기대 결과를 검사하는 코드이며 이번에는 전체 통과하지 않았다.
+실행 가능한 환경에서는 helper가 새 `fixtures`의 형제 파일 두 개에 서로 다른 256비트 난수의 64자리 텍스트를 넣는다. 정책 적용 뒤 사용자·제한 프로세스·그 자식이 모두 같은 경로와 같은 Win32 읽기 함수를 사용한다. 일반 사용자의 두 해시와 제한 주체들의 허용 해시·보호 오류 5를 확인한 뒤 수정·삭제 대조군으로 넘어간다. 검증기는 보호 파일 해시, 성공한 실제 쓰기 바이트·삭제 효과, PID·토큰, Job·desktop 정리와 ACL 복원을 대조한다. 식별값 원문은 프롬프트나 보고서에 싣지 않는다.
+
+실행 가능한 같은 조건에서 `-InjectPolicyFailure`로 없는 가짜 파일의 정책 적용 실패를 시험하고, `verify-report.mjs --policy-failure <보고서>`로 자식 미시작·복원을 확인한다. `--initialization-failure`는 본문 실행 전 종료된 보고서를 검사하며 10월 12일의 v1 실패 기록도 읽는다. 전체 판정은 v2의 실제 측정값을 요구한다.
 
 controller 자체 실행 실패는 `launcher-error.json`에 별도로 남기도록 마지막에 보완했다. 이 로깅 보완은 구문만 검사했고, 차단된 실행 파일을 다시 실행해 검증하지 않았다. 이미 관측한 차단은 `RESULTS.md`와 해당 run의 원본 CodeIntegrity 이벤트로 보존한다.
 
 `-KeepFixtures`는 권한을 원본으로 복원한 가짜 파일만 남긴다. 중간 실패로 파일이 남으면 기존 보고서를 보존한 채 해당 실행 파일의 `recover` 모드로 복원·정리한다.
 
 ```powershell
-& '.runtime\x-002-file-access\run-실제이름\FileAccessProbe.exe' recover 'C:\정확한\저장소\.runtime\x-002-file-access\run-실제이름'
+$run = Join-Path $env:TEMP 'ORBIT-X002\run-실제이름'
+& (Join-Path $run 'FileAccessProbe.exe') recover $run
 ```
 
-복구는 소유 표식과 저장된 ACL 목록, 모든 대상이 정확한 fixture 경계 내부이고 재분석 지점이 아닌지 확인한다. 부모부터 ACL을 복원한 뒤 전체를 다시 비교하고, 개별 파일·빈 폴더만 삭제한다. 새 실험을 시작하기 전 이전 실행의 복구를 확인해야 한다. 원시 결과·실행 파일은 Git 제외 `.runtime`에 보존한다.
+복구 전에 해당 실행이 끝났고 그 Job의 프로세스가 정리됐는지 확인한다. 실행 중인 v2 컨트롤러는 같은 실행 폴더의 복구를 잠근다. 복구는 소유 표식·ACL 목록·대상 경계·재분석 지점을 검사한다. 부모부터 복원하고 다시 읽어 비교한 뒤 개별 파일과 빈 폴더를 제거한다. 증거 파일은 실행 폴더에 남는다. 서명 차단 사전 검사의 `preflight.json`에는 복구할 ACL이 없다.
 
 ## 시험 범위와 판정
 
 | 항목 | 실제 동작 |
 |---|---|
-| 사용자 정상 | 보호/허용 파일의 읽기·쓰기·삭제를 제한 실행 전후 확인 |
+| 사용자 정상 | 보호 정책 적용 후 동일한 두 파일의 전체 식별값을 읽고, 제한 실행 후 다시 읽기·별도 파일 수정·삭제 확인 |
 | 제한 직접·자식 | 실제 `CreateFileW`/`ReadFile`/`WriteFile`/`DeleteFileW` 결과, 실제 토큰 제한 SID와 PID |
 | 정상 작업 | 허용 파일 읽기·쓰기·삭제와 자식 결과 파일 생성 |
 | 소유자 권한 | `OWNER RIGHTS` 설정 유무를 별도 파일로 비교하고 `WRITE_DAC` 획득·실제 DACL 변경·재읽기 관측 |

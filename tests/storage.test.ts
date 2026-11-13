@@ -37,6 +37,84 @@ function fixture() {
 const hash = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex');
 const dbOf = (store: ProjectStore) => (store as unknown as { db: DatabaseSync }).db;
 
+test('v3 data and backups retain their projects; active protection survives switching and restart, and old backups cannot clear it', () => {
+  const f = fixture();
+  const project = f.store.register(f.folder, true);
+  const plan = samplePlan();
+  f.store.saveFeaturePlan(project.id, plan);
+  f.store.close();
+  const previous = new DatabaseSync(f.path);
+  previous.exec('DROP TABLE protection_requests; PRAGMA user_version=3');
+  previous.close();
+  const store = new ProjectStore(f.directory);
+  const safety = store.backups()[0];
+  assert.ok(safety);
+  const request = { paths: ['가짜 파일.txt'], read: true, write: true, remove: true };
+  try {
+    assert.deepEqual(store.featurePlan(project.id), plan);
+    assert.equal(store.launchHold(), null);
+    store.saveProtection(project.id, request);
+    const protectedBackup = store.backup();
+    assert.throws(() => store.restore(safety.id), /보호 요청/);
+    assert.deepEqual(store.project(project.id).protection, request);
+    const other = store.register(f.root, true);
+    assert.equal(store.project(other.id).protection, undefined);
+    assert.throws(() => store.saveProtection(project.id, { ...request, paths: [] }), /현재 선택한/);
+    assert.ok(store.launchHold()?.includes(f.folder));
+    store.close();
+    const reopened = new ProjectStore(f.directory);
+    try {
+      assert.ok(reopened.launchHold()?.includes(f.folder));
+      const moved = `${f.folder}-이동`;
+      renameSync(f.folder, moved);
+      assert.throws(() => reopened.activate(project.id));
+      reopened.saveProtection(project.id, { ...request, paths: [] }, true);
+      assert.equal(reopened.launchHold(), null);
+      renameSync(moved, f.folder);
+      reopened.activate(project.id);
+      reopened.saveProtection(project.id, { ...request, paths: [] });
+      assert.equal(reopened.launchHold(), null);
+      reopened.restore(protectedBackup.id);
+      assert.deepEqual(reopened.project(project.id).protection, request);
+      assert.ok(reopened.launchHold());
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    store.close();
+  }
+});
+
+test('a failed protection save holds launches across restart until a successful retry or explicit clear', () => {
+  const f = fixture();
+  const project = f.store.register(f.folder, true);
+  const request = { paths: ['가짜 파일.txt'], read: true, write: false, remove: false };
+  const lock = new DatabaseSync(f.path);
+  try {
+    lock.exec('BEGIN IMMEDIATE');
+    assert.throws(() => f.store.saveProtection(project.id, request), /lock|busy/i);
+    assert.match(f.store.launchHold() ?? '', /저장.*확인하지 못해/);
+  } finally {
+    lock.close();
+    f.store.close();
+  }
+  const reopened = new ProjectStore(f.directory);
+  try {
+    assert.match(reopened.launchHold() ?? '', /저장.*확인하지 못해/);
+    reopened.saveProtection(project.id, request);
+    assert.deepEqual(reopened.project(project.id).protection, request);
+    assert.throws(
+      () => reopened.saveProtection(project.id, { ...request, paths: ['../other'] }),
+      /보호 경로/,
+    );
+    assert.match(reopened.launchHold() ?? '', /차단을 검증하지 못해/);
+    reopened.saveProtection(project.id, { ...request, paths: [] });
+    assert.equal(reopened.launchHold(), null);
+  } finally {
+    reopened.close();
+  }
+});
+
 test('direct helper writes without a transaction preserve existing feature data', () => {
   const f = fixture();
   try {
@@ -595,11 +673,11 @@ test('v1 project database upgrades only after a v1 safety copy and v1 backup res
     f.store.close();
     const db = new DatabaseSync(f.path);
     db.exec(
-      'DROP TABLE feature_paths; DROP TABLE verification_criteria; DROP TABLE verifications; DROP TABLE feature_dependencies; DROP TABLE features; PRAGMA user_version=1',
+      'DROP TABLE protection_requests; DROP TABLE feature_paths; DROP TABLE verification_criteria; DROP TABLE verifications; DROP TABLE feature_dependencies; DROP TABLE features; PRAGMA user_version=1',
     );
     db.close();
     const v1 = new ProjectStore(f.directory);
-    assert.equal(dbOf(v1).prepare('PRAGMA user_version').get()?.user_version, 3);
+    assert.equal(dbOf(v1).prepare('PRAGMA user_version').get()?.user_version, 4);
     assert.deepEqual(
       v1.catalog().projects.map(({ id, name }) => ({ id, name })),
       [{ id: project.id, name: project.name }],
@@ -628,7 +706,7 @@ test('v1 migration failure leaves the live database unchanged and can retry', ()
     f.store.close();
     const db = new DatabaseSync(f.path);
     db.exec(
-      'DROP TABLE feature_paths; DROP TABLE verification_criteria; DROP TABLE verifications; DROP TABLE feature_dependencies; DROP TABLE features; PRAGMA user_version=1',
+      'DROP TABLE protection_requests; DROP TABLE feature_paths; DROP TABLE verification_criteria; DROP TABLE verifications; DROP TABLE feature_dependencies; DROP TABLE features; PRAGMA user_version=1',
     );
     db.close();
     const before = hash(f.path),
@@ -644,7 +722,7 @@ test('v1 migration failure leaves the live database unchanged and can retry', ()
     }
     assert.equal(hash(f.path), before);
     const recovered = new ProjectStore(f.directory);
-    assert.equal(dbOf(recovered).prepare('PRAGMA user_version').get()?.user_version, 3);
+    assert.equal(dbOf(recovered).prepare('PRAGMA user_version').get()?.user_version, 4);
     assert.equal(recovered.backups().length, 2);
     recovered.close();
   } finally {
@@ -659,11 +737,11 @@ test('v2 migration preserves relations and verification, snapshots v2, persists 
   f.store.saveFeaturePlan(project.id, original);
   f.store.close();
   const db = new DatabaseSync(f.path);
-  db.exec('DROP TABLE feature_paths; PRAGMA user_version=2');
+  db.exec('DROP TABLE protection_requests; DROP TABLE feature_paths; PRAGMA user_version=2');
   db.close();
   const upgraded = new ProjectStore(f.directory);
   try {
-    assert.equal(dbOf(upgraded).prepare('PRAGMA user_version').get()?.user_version, 3);
+    assert.equal(dbOf(upgraded).prepare('PRAGMA user_version').get()?.user_version, 4);
     assert.deepEqual(upgraded.featurePlan(project.id), original);
     const v2 = upgraded.backups()[0];
     assert.ok(v2);
@@ -688,13 +766,13 @@ test('v2 migration failure preserves original bytes and a later retry succeeds',
   f.store.saveFeaturePlan(project.id, plan);
   f.store.close();
   const db = new DatabaseSync(f.path);
-  db.exec('DROP TABLE feature_paths; PRAGMA user_version=2');
+  db.exec('DROP TABLE protection_requests; DROP TABLE feature_paths; PRAGMA user_version=2');
   db.close();
   const before = hash(f.path),
     original = DatabaseSync.prototype.exec;
   try {
     DatabaseSync.prototype.exec = function (sql: string) {
-      if (sql.includes('PRAGMA user_version=3')) throw new Error('injected path migration failure');
+      if (sql.includes('PRAGMA user_version=4')) throw new Error('injected path migration failure');
       return original.call(this, sql);
     };
     assert.throws(() => new ProjectStore(f.directory), /migration failure/);

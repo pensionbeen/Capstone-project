@@ -35,13 +35,18 @@ internal static class FileAccessProbe
         try
         {
             if (args.Length < 2) throw new ArgumentException("Use run|run-keep|worker|child|held RUN_ROOT [handle].");
-            RunRoot = ValidateRunRoot(args[1]);
+            RunRoot = ValidateRunRoot(args[1], args[0] == "recover");
             DataRoot = Path.Combine(RunRoot, "fixtures");
-            if (args[0] == "recover") return Recover();
-            if (args[0] == "worker" || args[0] == "child") return Worker(args[0]);
+            if (args[0] == "worker" || args[0] == "child") return Worker(args[0], args[2]);
             if (args[0] == "held") return Held(new IntPtr(long.Parse(args[2])));
+            string lockPath = Path.Combine(RunRoot, "controller.lock");
+            if (args[0] == "recover")
+            {
+                using (File.Open(lockPath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None)) return Recover();
+            }
             if (args[0] != "run" && args[0] != "run-keep" && args[0] != "run-fail-policy") throw new ArgumentException("Unknown mode.");
-            return Run(args[0] == "run-keep", args[0] == "run-fail-policy");
+            using (File.Open(lockPath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+                return Run(args[0] == "run-keep", args[0] == "run-fail-policy");
         }
         catch (Exception e) { Console.Error.WriteLine(e.GetType().Name + ": " + e.Message); return 2; }
     }
@@ -66,18 +71,23 @@ internal static class FileAccessProbe
         var started = DateTime.UtcNow;
         var before = OtherProcesses();
         var report = new Dictionary<string, object>();
-        bool completed = false, restored = false, cleaned = false;
+        bool completed = false, restored = false, cleaned = false, ownsFixture = false, processesGone = true;
         string error = null;
         IntPtr token = IntPtr.Zero, desktop = IntPtr.Zero;
-        bool desktopClosed = true;
+        bool desktopClosed = true, desktopAbsent = true;
         try
         {
             var identity = TokenIdentity();
             report["controller"] = identity;
             if ((bool)identity["elevated"] || (bool)identity["restricted"])
                 throw new InvalidOperationException("Run under the ordinary, unelevated user token. No privilege fallback is performed.");
-            if (Directory.Exists(DataRoot)) throw new InvalidOperationException("Fixture directory already exists.");
-            CreateFixtures();
+            Guard(DataRoot);
+            if (!CreateDirectory(DataRoot, IntPtr.Zero)) throw Last("Create fresh fixture directory");
+            ownsFixture = true;
+            File.WriteAllText(Path.Combine(DataRoot, ".x002-owned"), Path.GetFileName(RunRoot), Encoding.UTF8);
+            var expected = CreateFixtures();
+            if (expected["allowed"] == expected["protected"]) throw new InvalidOperationException("Identical read controls.");
+            report["expectedReadHashes"] = expected;
             // Persist rollback data before the first ACL mutation.
             WriteJson(Path.Combine(RunRoot, "acl-before.json"), SavedAcl);
             report["beforePolicyHashes"] = ProtectedHashes();
@@ -89,21 +99,36 @@ internal static class FileAccessProbe
                 throw new InvalidOperationException("Missing-target DACL update unexpectedly succeeded.");
             }
             WriteJson(Path.Combine(RunRoot, "acl-applied.json"), SnapshotAcls());
-            report["ordinaryUser"] = NormalUserChecks();
+            var userReads = ReadPair();
+            report["ordinaryUser"] = userReads;
+            if (!userReads.All(r => MatchesMarker(r, expected[r.Operation.Split('/')[0]])))
+                throw new InvalidOperationException("Ordinary user could not read both original markers under the test policy.");
             report["protectedBeforeRestricted"] = ProtectedHashes();
             token = MakeRestrictedToken();
             desktop = NewPrivateDesktop();
             desktopClosed = false;
             report["requestedRestriction"] = new { flags = "DISABLE_MAX_PRIVILEGE (1)", restrictingSids = RestrictSids, disabledSids = new string[0], inheritHandles = false, desktop = WorkerDesktop, desktopIsolation = "One new non-visible desktop; existing desktop/window-station ACLs unchanged; hostile escape unverified" };
-            var launched = Launch(token, "worker", IntPtr.Zero);
+            processesGone = false;
+            var launched = Launch(token, "worker", IntPtr.Zero, expected["allowed"]);
+            processesGone = launched.CleanupConfirmed;
             report["restrictedLaunch"] = launched;
+            // Retain completed measurements even when a later read gate or child launch fails.
+            foreach (string actor in new[] { "worker", "child" })
+                if (File.Exists(Allowed(actor + ".json")))
+                    report[actor == "worker" ? "restrictedDirect" : "restrictedChild"] = ReadJson(Allowed(actor + ".json"));
             if (!launched.Success) throw new InvalidOperationException("Restricted worker did not complete: " + launched.Error + "; exit=" + launched.ExitCode);
-            report["restrictedDirect"] = ReadJson(Allowed("worker.json"));
-            report["restrictedChild"] = ReadJson(Allowed("child.json"));
             report["protectedAfterRestricted"] = ProtectedHashes();
             report["hardenedFilesUnchanged"] = StableProtectedHashes(
                 (Dictionary<string, string>)report["protectedBeforeRestricted"],
                 (Dictionary<string, string>)report["protectedAfterRestricted"]);
+            foreach (string actor in new[] { "worker", "child" })
+            {
+                var writePath = MutationFile("allowed", actor, "write");
+                var deletePath = MutationFile("allowed", actor, "delete");
+                bool deleted = GetFileAttributes(deletePath) == uint.MaxValue && Marshal.GetLastWin32Error() == 2;
+                report[actor + "AllowedMutationsVerified"] = deleted &&
+                    File.ReadAllBytes(writePath).Take(4).SequenceEqual(Encoding.ASCII.GetBytes("EDIT"));
+            }
             // Deliberately demonstrate why a broker must never pass a protected
             // handle. Only this dummy file handle is in the inheritance list.
             IntPtr held = Open(Protected("preopened.txt"), GR, false);
@@ -111,7 +136,9 @@ internal static class FileAccessProbe
             try
             {
                 if (!SetHandleInformation(held, 1, 1)) throw Last("SetHandleInformation");
+                processesGone = false;
                 var heldLaunch = Launch(token, "held", held);
+                processesGone = heldLaunch.CleanupConfirmed;
                 report["preopenedLaunch"] = heldLaunch;
                 if (!heldLaunch.Success) throw new InvalidOperationException("Preopened-handle worker failed.");
                 report["preopenedHandle"] = ReadJson(Allowed("held.json"));
@@ -132,19 +159,19 @@ internal static class FileAccessProbe
                 // A successful open means some reference is still alive.
                 IntPtr remaining = OpenDesktop(WorkerDesktop, 0, false, 1);
                 int reopenError = remaining == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0;
-                bool absent = remaining == IntPtr.Zero && reopenError == 2;
+                desktopAbsent = remaining == IntPtr.Zero && reopenError == 2;
                 if (remaining != IntPtr.Zero) CloseDesktop(remaining);
-                report["privateDesktopAbsentAfterClose"] = absent;
+                report["privateDesktopAbsentAfterClose"] = desktopAbsent;
                 report["privateDesktopReopenError"] = reopenError;
             }
-            try { restored = RestoreAcls(); }
+            try { if (ownsFixture && processesGone) restored = RestoreAcls(); }
             catch (Exception e) { Events.Add(new { phase = "restore-error", error = e.Message }); }
             if (restored && !keep)
             {
                 try { CleanFixtures(); cleaned = !Directory.Exists(DataRoot); }
                 catch (Exception e) { Events.Add(new { phase = "cleanup-error", error = e.Message }); }
             }
-            report["schemaVersion"] = 1;
+            report["schemaVersion"] = 2;
             report["startedUtc"] = started.ToString("o");
             report["finishedUtc"] = DateTime.UtcNow.ToString("o");
             report["osVersionCompatibilityValue"] = Environment.OSVersion.VersionString;
@@ -154,6 +181,7 @@ internal static class FileAccessProbe
             report["observationsComplete"] = completed;
             report["error"] = error;
             report["aclRestored"] = restored;
+            report["launchedProcessesGone"] = processesGone;
             report["fixtureRemoved"] = cleaned;
             report["keptFixtures"] = keep;
             report["privateDesktopHandleClosed"] = desktopClosed;
@@ -165,26 +193,38 @@ internal static class FileAccessProbe
         }
         Console.WriteLine("Observations complete=" + completed + "; ACL restored=" + restored + "; fixture removed=" + cleaned + "; product protection approved=false");
         if (error != null) Console.Error.WriteLine(error);
-        return completed && restored && (keep || cleaned) && desktopClosed ? 0 : 2;
+        return completed && restored && (keep || cleaned) && desktopClosed && desktopAbsent ? 0 : 2;
     }
 
-    static void CreateFixtures()
+    static Dictionary<string, string> CreateFixtures()
     {
-        foreach (string dir in new[] { DataRoot, Protected(""), Allowed(""), Path.Combine(DataRoot, "tools"), Path.Combine(DataRoot, "empty-protected") })
+        var expected = new Dictionary<string, string>();
+        foreach (string dir in new[] { Protected(""), Allowed(""), Path.Combine(DataRoot, "tools"), Path.Combine(DataRoot, "empty-protected") })
         { Guard(dir); Directory.CreateDirectory(dir); }
         foreach (string actor in new[] { "worker", "child", "normal" })
-            foreach (string operation in new[] { "read", "write", "delete" })
-                foreach (string directory in new[] { Protected(""), Allowed("") })
-                    File.WriteAllText(Path.Combine(directory, actor + "-" + operation + ".txt"), "X002 DUMMY ONLY " + actor + " " + operation + "\n", Encoding.UTF8);
+            foreach (string operation in new[] { "write", "delete" })
+                foreach (string kind in new[] { "protected", "allowed" })
+                    File.WriteAllText(MutationFile(kind, actor, operation), "X002 DUMMY ONLY " + actor + " " + operation + "\n", Encoding.UTF8);
+        using (var rng = RandomNumberGenerator.Create())
+        {
+            var bytes = new byte[32];
+            foreach (string kind in new[] { "allowed", "protected" })
+            {
+                rng.GetBytes(bytes);
+                byte[] marker = Encoding.ASCII.GetBytes(BitConverter.ToString(bytes).Replace("-", ""));
+                expected[kind] = HashBytes(marker, marker.Length);
+                File.WriteAllBytes(Marker(kind), marker);
+            }
+        }
         foreach (string name in new[] { "owner-unsafe.txt", "owner-hardened.txt", "preopened.txt", "alias.txt", "rename.txt" })
             File.WriteAllText(Protected(name), "X002 DUMMY ONLY " + name + "\n", Encoding.UTF8);
         File.Copy(Assembly.GetExecutingAssembly().Location, Path.Combine(DataRoot, "tools", "probe.exe"));
         // A hard link is another name for the SAME new fixture. It cannot point
         // outside this experiment and cleanup never follows reparse points.
         if (!CreateHardLink(Allowed("hardlink.txt"), Protected("alias.txt"), IntPtr.Zero)) throw Last("CreateHardLink fixture");
-        File.WriteAllText(Path.Combine(DataRoot, ".x002-owned"), Path.GetFileName(RunRoot), Encoding.UTF8);
         foreach (string path in EnumeratePlain(DataRoot)) SavedAcl[path] = GetSddl(path);
         SavedAcl[DataRoot] = GetSddl(DataRoot);
+        return expected;
     }
 
     static void ApplyPolicies()
@@ -199,37 +239,64 @@ internal static class FileAccessProbe
             // file so an allow rule through the alias cannot weaken the target.
             if (path == Allowed("hardlink.txt")) continue;
             if (!path.EndsWith("owner-unsafe.txt", StringComparison.OrdinalIgnoreCase)) baseAcl += "(A;;RC;;;OW)";
-            if (!isProtected) baseAcl += isAllowed ? "(A;OICI;0x1301bf;;;BU)" : "(A;;0x1200a9;;;BU)";
+            string leaf = Path.GetFileName(path);
+            bool sibling = String.Equals(Path.GetDirectoryName(path), DataRoot, StringComparison.OrdinalIgnoreCase);
+            if (sibling && leaf.StartsWith("protected-", StringComparison.Ordinal)) isProtected = true;
+            if (sibling && leaf.StartsWith("allowed-", StringComparison.Ordinal)) isAllowed = true;
+            if (!isProtected && path != Marker("protected"))
+                baseAcl += isAllowed ? "(A;OICI;0x1301bf;;;BU)" : "(A;;0x1200a9;;;BU)";
             SetDacl(path, baseAcl);
         }
     }
 
     static object NormalUserChecks()
     {
-        var rows = new List<Row>();
+        var rows = ReadPair();
         foreach (string kind in new[] { "protected", "allowed" })
         {
-            string dir = kind == "protected" ? Protected("") : Allowed("");
-            // Re-create the user's own delete fixture between the before/after checks.
-            File.WriteAllText(Path.Combine(dir, "normal-delete.txt"), "DUMMY NORMAL DELETE\n");
-            rows.Add(Read(kind + "/read", Path.Combine(dir, "normal-read.txt")));
-            rows.Add(Write(kind + "/write", Path.Combine(dir, "normal-write.txt")));
-            rows.Add(Delete(kind + "/delete", Path.Combine(dir, "normal-delete.txt")));
+            rows.Add(Write(kind + "/write", MutationFile(kind, "normal", "write")));
+            rows.Add(Delete(kind + "/delete", MutationFile(kind, "normal", "delete")));
         }
         return rows;
     }
 
-    static int Worker(string actor)
+    static string Marker(string kind) { return Path.Combine(DataRoot, kind + ".txt"); }
+    static string MutationFile(string kind, string actor, string operation)
+    { return Path.Combine(DataRoot, kind + "-" + actor + "-" + operation + ".txt"); }
+    static List<Row> ReadPair()
     {
-        var rows = new List<Row>();
+        return new List<Row> {
+            Read("allowed/read", Marker("allowed")), Read("protected/read", Marker("protected"))
+        };
+    }
+    static bool MatchesMarker(Row row, string expected)
+    { return row.Success && row.Win32Error == 0 && row.Bytes == 64 && row.Sha256 == expected; }
+
+    static int Worker(string actor, string allowedHash)
+    {
         var identity = TokenIdentity();
-        if (!(bool)identity["restricted"]) throw new InvalidOperationException("Worker must have a restricting-SID token; no ordinary fallback.");
+        if (!(bool)identity["restricted"] || (bool)identity["elevated"] ||
+            !((List<string>)identity["restrictingSids"]).OrderBy(s => s).SequenceEqual(RestrictSids.OrderBy(s => s)))
+            throw new InvalidOperationException("Worker token does not match the requested restriction.");
+        var rows = ReadPair();
+        bool readPassed = MatchesMarker(rows[0], allowedHash) && !rows[1].Success &&
+            rows[1].Win32Error == ERROR_ACCESS_DENIED && rows[1].Bytes == 0 && rows[1].Sha256 == null;
+        LaunchResult child = null;
+        string evidence = Allowed(actor + ".json");
+        WriteJson(evidence, new { identity, rows, readPassed });
+        if (!readPassed) return 3;
+        // No actor attempts to modify or delete a target until all three read controls pass.
+        // The child has the inherited token and repeats the same read gate itself.
+        if (actor == "worker")
+        {
+            child = Launch(IntPtr.Zero, "child", IntPtr.Zero, allowedHash);
+            WriteJson(evidence, new { identity, rows, readPassed, childLaunch = child });
+            if (!child.Success) return 3;
+        }
         foreach (string kind in new[] { "protected", "allowed" })
         {
-            string dir = kind == "protected" ? Protected("") : Allowed("");
-            rows.Add(Read(kind + "/read", Path.Combine(dir, actor + "-read.txt")));
-            rows.Add(Write(kind + "/write", Path.Combine(dir, actor + "-write.txt")));
-            rows.Add(Delete(kind + "/delete", Path.Combine(dir, actor + "-delete.txt")));
+            rows.Add(Write(kind + "/write", MutationFile(kind, actor, "write")));
+            rows.Add(Delete(kind + "/delete", MutationFile(kind, actor, "delete")));
         }
         if (actor == "worker")
         {
@@ -248,13 +315,8 @@ internal static class FileAccessProbe
             rows.Add(Read("alias/hardlink-read", Allowed("hardlink.txt")));
             rows.Add(Read("alias/extended-path-read", "\\\\?\\" + Protected("alias.txt")));
             rows.Add(Read("alias/dotdot-read", Allowed("..\\protected\\alias.txt")));
-            // Child is created by the restricted worker itself. No token is
-            // explicitly supplied, testing actual primary-token inheritance.
-            var child = Launch(IntPtr.Zero, "child", IntPtr.Zero);
-            WriteJson(Allowed("worker.json"), new { identity = identity, rows = rows, childLaunch = child });
-            return child.Success ? 0 : 3;
         }
-        WriteJson(Allowed("child.json"), new { identity = identity, rows = rows });
+        WriteJson(evidence, new { identity, rows, readPassed, childLaunch = child });
         return 0;
     }
 
@@ -318,16 +380,30 @@ internal static class FileAccessProbe
         finally { LocalFree(sd); }
     }
 
-    sealed class LaunchResult { public bool Success; public int Error; public uint ExitCode; public uint Pid; public string StartedUtc; public bool JobEmpty; public bool TimedOut; }
-    static LaunchResult Launch(IntPtr token, string mode, IntPtr inherited)
+    sealed class LaunchResult { public bool Success; public int Error; public uint ExitCode; public uint Pid; public string StartedUtc; public bool JobEmpty; public bool TimedOut; public bool CleanupConfirmed; }
+    static bool WaitForEmptyJob(IntPtr job)
+    {
+        var elapsed = Stopwatch.StartNew();
+        var accounting = new JOBOBJECT_BASIC_ACCOUNTING_INFORMATION();
+        do
+        {
+            if (!QueryInformationJobObject(job, 1, ref accounting, (uint)Marshal.SizeOf(accounting), IntPtr.Zero)) return false;
+            if (accounting.ActiveProcesses == 0) return true;
+            System.Threading.Thread.Sleep(20);
+        } while (elapsed.ElapsedMilliseconds < 1500);
+        return false;
+    }
+    static LaunchResult Launch(IntPtr token, string mode, IntPtr inherited, string allowedHash = null)
     {
         string exe = Path.Combine(DataRoot, "tools", "probe.exe");
         var args = Quote(exe) + " " + mode + " " + Quote(RunRoot) + (inherited == IntPtr.Zero ? "" : " " + inherited.ToInt64());
+        if (allowedHash != null) args += " " + Quote(allowedHash);
         var si = new STARTUPINFOEX(); si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFO));
         si.StartupInfo.dwFlags = 1; si.StartupInfo.wShowWindow = 0;
         si.StartupInfo.lpDesktop = WorkerDesktop;
         PROCESS_INFORMATION pi = new PROCESS_INFORMATION();
         IntPtr job = IntPtr.Zero, list = IntPtr.Zero, handles = IntPtr.Zero;
+        bool assigned = false;
         var result = new LaunchResult { StartedUtc = DateTime.UtcNow.ToString("o") };
         try
         {
@@ -354,14 +430,13 @@ internal static class FileAccessProbe
             if (!ok) { result.Error = Marshal.GetLastWin32Error(); return result; }
             result.Pid = pi.dwProcessId;
             if (!AssignProcessToJobObject(job, pi.hProcess)) throw Last("AssignProcessToJobObject");
+            assigned = true;
             if (ResumeThread(pi.hThread) == uint.MaxValue) throw Last("ResumeThread");
             uint waited = WaitForSingleObject(pi.hProcess, 20000);
             if (waited == 258) { result.TimedOut = true; result.Error = 1460; return result; }
             if (waited != 0) throw Last("WaitForSingleObject");
             if (!GetExitCodeProcess(pi.hProcess, out result.ExitCode)) throw Last("GetExitCodeProcess");
-            var accounting = new JOBOBJECT_BASIC_ACCOUNTING_INFORMATION();
-            if (!QueryInformationJobObject(job, 1, ref accounting, (uint)Marshal.SizeOf(accounting), IntPtr.Zero)) throw Last("QueryInformationJobObject");
-            result.JobEmpty = accounting.ActiveProcesses == 0;
+            result.JobEmpty = WaitForEmptyJob(job);
             result.Success = result.ExitCode == 0 && result.JobEmpty;
             return result;
         }
@@ -370,12 +445,20 @@ internal static class FileAccessProbe
         {
             // Job contains only the new suspended child and its descendants.
             // Never search for or terminate processes by name or unrelated PID.
-            if (job != IntPtr.Zero) CloseHandle(job);
+            if (assigned && !result.JobEmpty)
+            {
+                TerminateJobObject(job, 99);
+                result.JobEmpty = WaitForEmptyJob(job);
+            }
+            result.CleanupConfirmed = !assigned || result.JobEmpty;
             if (pi.hProcess != IntPtr.Zero)
             {
-                if (WaitForSingleObject(pi.hProcess, 0) == 258) { TerminateProcess(pi.hProcess, 99); WaitForSingleObject(pi.hProcess, 5000); }
+                if (!assigned && WaitForSingleObject(pi.hProcess, 0) == 258) TerminateProcess(pi.hProcess, 99);
+                result.CleanupConfirmed &= WaitForSingleObject(pi.hProcess, 5000) == 0;
                 CloseHandle(pi.hProcess);
             }
+            if (job != IntPtr.Zero) CloseHandle(job);
+            result.Success &= result.CleanupConfirmed;
             if (pi.hThread != IntPtr.Zero) CloseHandle(pi.hThread);
             if (list != IntPtr.Zero) { DeleteProcThreadAttributeList(list); Marshal.FreeHGlobal(list); }
             if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
@@ -448,7 +531,7 @@ internal static class FileAccessProbe
         finally { CloseHandle(token); }
     }
 
-    sealed class Row { public string Operation; public bool Success; public int Win32Error; public string ErrorName; public uint Bytes; }
+    sealed class Row { public string Operation; public bool Success; public int Win32Error; public string ErrorName; public uint Bytes; public string Sha256; }
     static Row Result(string name, bool ok, int code, uint bytes = 0)
     { return new Row { Operation = name, Success = ok, Win32Error = code, ErrorName = code == 0 ? "SUCCESS" : code == ERROR_ACCESS_DENIED ? "ERROR_ACCESS_DENIED" : new Win32Exception(code).Message, Bytes = bytes }; }
     static IntPtr Open(string path, uint access, bool dir)
@@ -463,7 +546,15 @@ internal static class FileAccessProbe
     {
         IntPtr h = Open(path, GR, false);
         if (h == Invalid) return Result(name, false, Marshal.GetLastWin32Error());
-        try { byte[] data = new byte[128]; uint count; bool ok = ReadFile(h, data, 128, out count, IntPtr.Zero); return Result(name, ok, ok ? 0 : Marshal.GetLastWin32Error(), count); }
+        try
+        {
+            // Markers are exactly 64 bytes; a short, empty or oversized read cannot pass.
+            byte[] data = new byte[128]; uint count;
+            bool ok = ReadFile(h, data, (uint)data.Length, out count, IntPtr.Zero);
+            var row = Result(name, ok, ok ? 0 : Marshal.GetLastWin32Error(), count);
+            if (ok) row.Sha256 = HashBytes(data, (int)count);
+            return row;
+        }
         finally { CloseHandle(h); }
     }
     static Row Write(string name, string path)
@@ -491,10 +582,14 @@ internal static class FileAccessProbe
     static object ReadJson(string path) { return Json.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)); }
     static string Hash(string path)
     { using (var sha = SHA256.Create()) using (var stream = File.OpenRead(path)) return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant(); }
+    static string HashBytes(byte[] data, int count)
+    { using (var sha = SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(data, 0, count)).Replace("-", "").ToLowerInvariant(); }
     static Dictionary<string, string> ProtectedHashes()
     {
         var hashes = new Dictionary<string, string>();
         foreach (string path in Directory.GetFiles(Protected(""))) hashes[Path.GetFileName(path)] = Hash(path);
+        foreach (string path in Directory.GetFiles(DataRoot, "protected-*.txt")) hashes[Path.GetFileName(path)] = Hash(path);
+        hashes["protected.txt"] = Hash(Marker("protected"));
         return hashes;
     }
     static bool StableProtectedHashes(Dictionary<string, string> before, Dictionary<string, string> after)
@@ -527,7 +622,20 @@ internal static class FileAccessProbe
         }
         foreach (var pair in SavedAcl)
         {
-            if (!File.Exists(pair.Key) && !Directory.Exists(pair.Key)) continue;
+            // File.Exists also returns false on access errors. A missing entry is
+            // expected only for the four disposable positive delete controls.
+            if (GetFileAttributes(pair.Key) == uint.MaxValue)
+            {
+                int code = Marshal.GetLastWin32Error();
+                bool disposable = new[] { MutationFile("allowed", "worker", "delete"), MutationFile("allowed", "child", "delete"),
+                    MutationFile("allowed", "normal", "delete"), MutationFile("protected", "normal", "delete") }.Contains(pair.Key, StringComparer.OrdinalIgnoreCase);
+                // Recovery of a version 1 journal retains its original delete-control names.
+                if (Path.GetFileName(Path.GetDirectoryName(RunRoot)) == "x-002-file-access")
+                    disposable = new[] { Allowed("worker-delete.txt"), Allowed("child-delete.txt"), Allowed("normal-delete.txt"),
+                        Protected("normal-delete.txt") }.Contains(pair.Key, StringComparer.OrdinalIgnoreCase);
+                if (code != 2 || !disposable) { ok = false; Events.Add(new { phase = "restore-missing", path = pair.Key, error = code }); }
+                continue;
+            }
             if (GetSddl(pair.Key) != pair.Value) { ok = false; Events.Add(new { phase = "restore-mismatch", path = pair.Key }); }
         }
         Events.Add(new { phase = "restore", restored = ok });
@@ -557,12 +665,14 @@ internal static class FileAccessProbe
         { Guard(child); result.Add(child); if (Directory.Exists(child)) result.AddRange(EnumeratePlain(child)); }
         return result;
     }
-    static string ValidateRunRoot(string value)
+    static string ValidateRunRoot(string value, bool recovery)
     {
         string path = Path.GetFullPath(value).TrimEnd(Path.DirectorySeparatorChar);
         string parent = Path.GetDirectoryName(path);
-        if (Path.GetFileName(parent) != "x-002-file-access" || Path.GetFileName(Path.GetDirectoryName(parent)) != ".runtime" || !Path.GetFileName(path).StartsWith("run-", StringComparison.Ordinal))
-            throw new InvalidOperationException("Destination must be a new .runtime/x-002-file-access/run-* directory.");
+        string tempRoot = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "ORBIT-X002"));
+        bool legacy = recovery && Path.GetFileName(parent) == "x-002-file-access" && Path.GetFileName(Path.GetDirectoryName(parent)) == ".runtime";
+        if ((!String.Equals(parent, tempRoot, StringComparison.OrdinalIgnoreCase) && !legacy) || !Path.GetFileName(path).StartsWith("run-", StringComparison.Ordinal))
+            throw new InvalidOperationException("Expected a fresh ORBIT-X002 run directory under the user's temporary directory.");
         PlainAncestors(path);
         return path;
     }
@@ -614,6 +724,8 @@ internal static class FileAccessProbe
     [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION { public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation; public IO_COUNTERS IoInfo; public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed; }
     [StructLayout(LayoutKind.Sequential)] struct JOBOBJECT_BASIC_ACCOUNTING_INFORMATION { public long TotalUserTime, TotalKernelTime, ThisPeriodTotalUserTime, ThisPeriodTotalKernelTime; public uint TotalPageFaultCount, TotalProcesses, ActiveProcesses, TotalTerminatedProcesses; }
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateDirectory(string path, IntPtr sa);
+    [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
     [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr h);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr h);
     [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr p, uint access, out IntPtr token);

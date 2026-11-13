@@ -383,10 +383,12 @@ export function ProtectionPage({
   draft,
   onSave,
   providers,
+  actualProject,
 }: {
   draft: ProtectionDraft;
-  onSave: (value: ProtectionDraft) => void;
+  onSave: (value: ProtectionDraft) => Promise<string>;
   providers: Provider[];
+  actualProject: boolean;
 }) {
   return (
     <section className="workspace-page narrow-page">
@@ -401,7 +403,11 @@ export function ProtectionPage({
         </span>
         <div>
           <h2>보호 정책 적용 전</h2>
-          <p>지금 저장하는 내용은 설정안이에요. 실제 파일 접근 차단은 준비 중이에요.</p>
+          <p>
+            {actualProject
+              ? '보호할 경로를 저장하면 ORBIT의 모든 Codex 실행을 보류해요.'
+              : '지금 저장하는 내용은 설정안이에요. 실제 파일 접근 차단은 준비 중이에요.'}
+          </p>
         </div>
       </div>
       <div className="section-block">
@@ -409,7 +415,7 @@ export function ProtectionPage({
           <h2>보호할 경로</h2>
           <Badge>{draft.paths.length}개 지정</Badge>
         </div>
-        <ProtectionEditor draft={draft} onSave={onSave} />
+        <ProtectionEditor actualProject={actualProject} draft={draft} onSave={onSave} />
       </div>
       <details className="advanced">
         <summary>

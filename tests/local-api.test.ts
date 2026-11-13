@@ -155,6 +155,49 @@ async function connect(service: Service) {
   await once(ws, 'open');
   return ws;
 }
+
+test('authenticated REST holds login and every project execution path before preparation while a policy is pending or unreadable', async (t) => {
+  let unreadable = false;
+  let prepared = 0;
+  const manager = new SessionManager({
+    launchHold: () => {
+      if (unreadable) throw new Error('read failed');
+      return '보호 요청으로 대기';
+    },
+    prepare: async () => {
+      prepared++;
+      throw new Error('unexpected driver preparation');
+    },
+    loadFeature: () => {
+      throw new Error('unexpected feature lookup');
+    },
+  });
+  const id = manager.registerProject(resolve('.'));
+  assert.ok(id);
+  const service = await startLocalApi(manager, 'orbit://app');
+  t.after(() => service.close());
+  const commands = {
+    submit: { prompt: '일반 대화' },
+    requirements: { action: 'start', input: '목표' },
+    feature: { action: 'start', featureId: randomUUID(), expectedRevision: 1, input: '기능' },
+    generate: {},
+  };
+  for (const failed of [false, true]) {
+    unreadable = failed;
+    const reason = failed ? /확인할 수 없어/ : /보호 요청으로 대기/;
+    const status = await http(service, '/v1/ai/availability');
+    assert.match(status.text, reason);
+    for (const [action, body] of Object.entries(commands)) {
+      const reply = await http(service, `/v1/projects/${id}/session/${action}`, {
+        body: JSON.stringify({ ...body, expectedOutputId: null, expectedRunId: null }),
+      });
+      assert.equal(reply.status, 409, reply.text);
+      assert.match(reply.text, reason);
+    }
+    assert.equal(manager.read(id, 0).id, null);
+  }
+  assert.equal(prepared, 0);
+});
 async function receive(ws: WebSocket, data: unknown) {
   const message = once(ws, 'message');
   ws.send(typeof data === 'string' ? data : JSON.stringify(data));
