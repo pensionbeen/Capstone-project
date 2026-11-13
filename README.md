@@ -32,10 +32,5 @@ npm.cmd run dev
 7. [이번 실제 작업 기록](docs/work-log/2026-10-04.md)
 8. AI 사용 실험은 [X-001 결과](docs/experiments/X-001.md) → [실행 방법](experiments/x-001-ai-terminal/README.md)
 
-AI 시작 지침은 [AGENTS.md](AGENTS.md), 독립 검토 지침은 [GEMINI.md](GEMINI.md)에 있다.
 
-## 기준 자료
-
-- [Notion 졸업작품 기획](https://app.notion.com/p/3e86817a257180cea8bed02a973ad970)
-- [대상 GitHub 저장소](https://github.com/pensionbeen/Capstone-project)
 
